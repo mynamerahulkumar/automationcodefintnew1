@@ -1,0 +1,29 @@
+dhan:
+  client_id: "1103695755"
+  access_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgzODcxNjgyLCJpYXQiOjE3ODM3ODUyODIsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTAzNjk1NzU1In0.nuFbsdJ1ISCjMjJO3QSYYHZo5Ae4-WPjkkNWz5UZn28RYKoqZ_9oYF8iIAdJLjgrxMTqTEMEz3pPUVBMm4_6Ow"
+
+trading:
+  segment: EQUITY
+  exchange: NSE
+  stock_name: HDFCBANK
+  security_id: ""
+  quantity: 1
+  product_type: INTRADAY
+  transaction_type: BUY
+  order_type: LIMIT
+  limit_price: 1890.50
+  validity: DAY
+  expiry: "2026-07-14 14:00"
+  strike: 25000
+  option_type: CE
+
+risk:
+  target_percent: 2
+  stoploss_percent: 1
+  trailing_sl: false
+
+cloud:
+  log_level: INFO
+  dry_run: false
+  console_log: true
+  auto_place_order: true

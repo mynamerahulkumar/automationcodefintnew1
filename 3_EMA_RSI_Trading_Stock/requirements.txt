@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+requests
+PyYAML
+pandas
+numpy
+ta
+colorama
+psutil
+dhanhq
+pytz
+mibian

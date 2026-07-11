@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+pyyaml
+requests
+dhanhq
+numpy
+pytz
+mibian
