@@ -1,10 +1,11 @@
+# Python 3.10+ required (dhanhq 2.2 uses match/case)
 fastapi
 uvicorn
 pandas
 pyyaml
 python-dotenv
 requests
-dhanhq
+dhanhq>=2.1.0
 numpy
 pytz
 mibian

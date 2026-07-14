@@ -9,6 +9,21 @@ import sys
 import time
 from pathlib import Path
 
+# dhanhq>=2.2.0 uses match/case (Python 3.10+). Fail early with a clear message.
+if sys.version_info < (3, 10):
+    print(
+        f"ERROR: Python 3.10+ is required (found {sys.version.split()[0]}).\n"
+        "dhanhq 2.2+ uses match/case syntax and cannot import on older Python.\n\n"
+        "EC2 / Amazon Linux fix:\n"
+        "  sudo dnf install -y python3.11 python3.11-pip python3.11-devel   # AL2023\n"
+        "  # or: sudo yum install -y python3.11 python3.11-pip               # some AL2\n"
+        "  python3.11 -m venv venv\n"
+        "  source venv/bin/activate\n"
+        "  pip install -r requirements.txt\n"
+        "  python start.py\n"
+    )
+    sys.exit(1)
+
 import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent

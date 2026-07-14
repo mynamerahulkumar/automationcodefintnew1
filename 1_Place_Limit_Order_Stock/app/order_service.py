@@ -92,6 +92,13 @@ class OrderService:
                     "Dhan authentication failed. Check DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env.",
                     status_code=401,
                 ) from exc
+            if "invalid syntax" in message.lower() or "match/case" in message.lower():
+                raise OrderServiceError(
+                    f"Python too old for dhanhq 2.2 ({message}). "
+                    "Use Python 3.10+ — on EC2 install python3.11, recreate venv, "
+                    "then: pip install -r requirements.txt",
+                    status_code=500,
+                ) from exc
             logger.exception("Unexpected error placing order")
             raise OrderServiceError(message, status_code=500) from exc
 

@@ -34,7 +34,14 @@ def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
     if _dhan_client is not None and _dhan_credentials_key == cred_key:
         return _dhan_client
 
-    from Dhan_SRP import Dhansrp  # noqa: WPS433 — lazy import saves ~100MB+ at startup
+    try:
+        from Dhan_SRP import Dhansrp  # noqa: WPS433 — lazy import saves ~100MB+ at startup
+    except SyntaxError as exc:
+        raise RuntimeError(
+            f"dhanhq failed to import under Python {sys.version.split()[0]}: {exc}. "
+            "Use Python 3.10+ (dhanhq 2.2 uses match/case). "
+            "On EC2: install python3.11, recreate venv, reinstall requirements."
+        ) from exc
 
     logger.info("Initializing Dhan client")
     _dhan_client = Dhansrp(

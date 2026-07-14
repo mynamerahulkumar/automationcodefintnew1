@@ -20,7 +20,7 @@ Default API port: **7001**
 
 | Requirement | Details |
 |-------------|---------|
-| Python | **3.12+** recommended (3.10+ should work) |
+| Python | **3.10+ required** (3.11 or 3.12 recommended). `dhanhq` 2.2 uses `match`/`case` and fails on 3.9 with `invalid syntax (_super_order.py, line 54)` |
 | Dhan account | Client ID + access token from [web.dhan.co](https://web.dhan.co) → Profile → **DhanHQ Trading APIs** |
 | Internet | Required for Dhan API and security master |
 | Git | Optional, if cloning from GitHub |
@@ -411,6 +411,7 @@ Whitelist the **VPS public IP** in Dhan before live trading.
 
 | Problem | What to check |
 |---------|----------------|
+| `invalid syntax (_super_order.py, line 54)` | Python is **older than 3.10**. Install Python 3.11+, recreate `venv`, reinstall deps (see below) |
 | `python: command not found` | Use `python3` on Mac/Linux, or reinstall Python on Windows with PATH enabled |
 | `No module named 'fastapi'` | Activate venv, then `pip install -r requirements.txt` |
 | `Security ID not found for stock` | Check `stock_name` spelling; ensure `security_id/api-scrip-master.csv` exists |
@@ -419,6 +420,33 @@ Whitelist the **VPS public IP** in Dhan before live trading.
 | Order fails outside market hours | Use AMO only if intended; otherwise trade during NSE session |
 | Port 7001 already in use | Run `python stop.py` (Mac/Linux) or kill the old process |
 | `auto_place_order` places when you only want the server | Set `cloud.auto_place_order: false` |
+
+### EC2: fix `invalid syntax (_super_order.py)`
+
+Amazon Linux often ships Python 3.9. Recreate the venv with 3.11+:
+
+```bash
+python3 --version   # if < 3.10, continue
+
+# Amazon Linux 2023
+sudo dnf install -y python3.11 python3.11-pip python3.11-devel
+
+cd ~/automationcodefintnew1/1_Place_Limit_Order_Stock
+deactivate 2>/dev/null || true
+rm -rf venv
+python3.11 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python start.py
+```
+
+Confirm:
+
+```bash
+python --version   # must be 3.10+
+python -c "from dhanhq import dhanhq; print('dhanhq OK')"
+```
 
 ---
 
