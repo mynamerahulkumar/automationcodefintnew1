@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+dhanhq
+pandas
+numpy
+scipy
+mibian
+pyyaml
+requests
+python-dotenv
+psutil
+pytz

@@ -1,0 +1,38 @@
+broker:
+  client_id: "1103695755"
+  access_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgzODcxNjgyLCJpYXQiOjE3ODM3ODUyODIsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTAzNjk1NzU1In0.nuFbsdJ1ISCjMjJO3QSYYHZo5Ae4-WPjkkNWz5UZn28RYKoqZ_9oYF8iIAdJLjgrxMTqTEMEz3pPUVBMm4_6Ow"
+
+
+trading:
+  exchange: NSE
+  segment: EQUITY
+  stock_name: HDFCBANK
+  security_id: "" #optional 
+  quantity: 1
+  product_type: INTRADAY
+  order_type: LIMIT
+  transaction_type: BUY
+  limit_price: 0
+  validity: DAY
+  expiry: ""
+  strike: 0
+  option_type: CE
+
+strategy:
+  name: EMA_CROSSOVER
+  timeframe: 5m
+  fast_ema: 9
+  slow_ema: 21
+  polling_seconds: 30
+
+risk:
+  target_percent: 2
+  stoploss_percent: 1
+  trailing_sl: false
+
+bot:
+  paper_trade: false
+  one_position_only: true
+  cooldown_seconds: 60
+  log_level: INFO
+  startup_poll_logs: 2

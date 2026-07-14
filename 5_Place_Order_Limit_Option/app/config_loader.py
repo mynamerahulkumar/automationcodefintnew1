@@ -7,18 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 
 from app.logger import get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
-DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 logger = get_logger()
-
-# Load .env once at import so DHAN_* vars are available process-wide.
-load_dotenv(DEFAULT_ENV_PATH)
 
 
 class ConfigError(Exception):
@@ -41,9 +36,6 @@ class ConfigLoader:
 
     def load(self) -> dict[str, Any]:
         """Load configuration from YAML file."""
-        # Re-load .env on each config load / reload so token rotations apply.
-        load_dotenv(DEFAULT_ENV_PATH, override=True)
-
         if not self.config_path.exists():
             raise ConfigError(f"Configuration file not found: {self.config_path}")
 
@@ -64,14 +56,15 @@ class ConfigLoader:
         return self.load()
 
     def get_dhan_credentials(self) -> tuple[str, str]:
-        """Return Dhan client_id and access_token from .env (or process env)."""
-        client_id = os.environ.get("DHAN_CLIENT_ID", "").strip()
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN", "").strip()
+        """Return Dhan client_id and access_token with env overrides."""
+        dhan = self.config.get("dhan", {})
+        client_id = os.environ.get("DHAN_CLIENT_ID") or dhan.get("client_id", "")
+        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or dhan.get("access_token", "")
 
         if not client_id or not access_token:
             raise ConfigError(
-                "Dhan credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
-                f"in {DEFAULT_ENV_PATH} (copy from .env.example)."
+                "Dhan credentials missing. Set dhan.client_id and dhan.access_token "
+                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
             )
         return str(client_id), str(access_token)
 

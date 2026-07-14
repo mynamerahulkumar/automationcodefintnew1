@@ -1,10 +1,9 @@
 fastapi
 uvicorn
+dhanhq
 pandas
 pyyaml
-python-dotenv
 requests
-dhanhq
-numpy
+python-dotenv
+psutil
 pytz
-mibian

@@ -1,0 +1,57 @@
+server:
+  host: 0.0.0.0
+  port: 7003
+
+bot:
+  enabled: true
+  polling_interval_seconds: 30
+  always_refresh_cli: true
+  cli_refresh_every: 3
+  paper_trade: true
+
+strategy:
+  name: Long Straddle EMA Confirmation
+  entry_time: "09:20"
+  square_off_time: "15:20"
+
+ema:
+  enabled: true
+  fast: 9
+  slow: 21
+  timeframe_minutes: 5
+
+trading:
+  exchange: NSE
+  underlying: NIFTY
+  expiry: WEEKLY
+  quantity: 75
+  product_type: INTRADAY
+  validity: DAY
+
+option_selection:
+  type: ATM
+  strike_offset: 0
+
+order:
+  order_type: LIMIT
+  limit_buffer: 0.50
+
+risk:
+  stop_loss_percent: 10
+  take_profit_percent: 20
+  trailing_enabled: true
+  trailing_type: PERCENT
+  trailing_percent: 5
+
+security:
+  symbol: NIFTY
+  security_id:
+
+logging:
+  level: INFO
+  console: true
+  file: true
+
+dhan:
+  client_id: ""
+  access_token: ""

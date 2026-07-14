@@ -1,0 +1,52 @@
+server:
+  host: 0.0.0.0
+  port: 7003
+
+bot:
+  enabled: true
+  polling_interval_seconds: 30
+  always_refresh_cli: true
+  cli_refresh_every: 3
+  paper_trade: false
+
+strategy:
+  name: Long Straddle ORB
+  entry_time: "09:15"
+  opening_range_minutes: 15
+  square_off_time: "15:15"
+
+trading:
+  exchange: NSE
+  underlying: NIFTY
+  expiry: WEEKLY
+  quantity: 75
+  product_type: INTRADAY
+  validity: DAY
+
+option_selection:
+  type: ATM
+  strike_offset: 0
+
+order:
+  order_type: LIMIT
+  limit_buffer: 0.50
+
+risk:
+  stop_loss_percent: 25
+  take_profit_percent: 50
+  trailing_enabled: true
+  trailing_type: PERCENT
+  trailing_percent: 10
+
+security:
+  symbol: NIFTY
+  security_id:
+
+logging:
+  level: INFO
+  console: true
+  file: true
+
+dhan:
+  client_id: ""
+  access_token: ""

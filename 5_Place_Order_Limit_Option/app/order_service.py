@@ -89,7 +89,7 @@ class OrderService:
             message = str(exc)
             if "credential" in message.lower() or "auth" in message.lower():
                 raise OrderServiceError(
-                    "Dhan authentication failed. Check DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env.",
+                    "Dhan authentication failed. Check client_id and access_token.",
                     status_code=401,
                 ) from exc
             logger.exception("Unexpected error placing order")

@@ -28,29 +28,17 @@ cd 1_Place_Limit_Order_Stock
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
 ## Configuration
 
-### Credentials (`.env`)
-
-Copy the example and fill in your Dhan credentials:
-
-```bash
-cp .env.example .env
-```
-
-```env
-DHAN_CLIENT_ID=YOUR_CLIENT_ID
-DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
-```
-
-`.env` is gitignored — never commit real tokens.
-
-### Trading settings (`config/config.yaml`)
+Edit `config/config.yaml`:
 
 ```yaml
+dhan:
+  client_id: "YOUR_CLIENT_ID"
+  access_token: "YOUR_ACCESS_TOKEN"
+
 trading:
   segment: EQUITY          # EQUITY or OPTION
   exchange: NSE
@@ -70,6 +58,13 @@ cloud:
   log_level: INFO
   dry_run: true            # set false for live orders
   console_log: false       # true for local dev, false on AWS 1GB VM
+```
+
+Credentials can also be set via environment variables:
+
+```bash
+export DHAN_CLIENT_ID="..."
+export DHAN_ACCESS_TOKEN="..."
 ```
 
 Security IDs are resolved automatically from `security_id/api-scrip-master.csv` using `stock_name`. For options, also set `expiry`, `strike`, and `option_type`.

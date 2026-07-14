@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+dhanhq
+pandas
+pyyaml
+requests
+python-dotenv
+psutil
+colorama
+tabulate
+pytz
