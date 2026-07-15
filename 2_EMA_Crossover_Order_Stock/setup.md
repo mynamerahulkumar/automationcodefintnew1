@@ -416,6 +416,33 @@ python start.py
 # Reattach: tmux attach -t trading
 ```
 
+### AWS 1 GB RAM — if server exits with `exit=1` or `Killed`
+
+The first Dhan poll loads market data. On a 1 GB VM this can OOM. Fixes:
+
+```bash
+# 1) Add 2 GB swap (one-time)
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab
+free -h
+
+# 2) Pull latest code (low-memory equity cache + better crash logs)
+cd ~/automationcodefintnew1/2_EMA_Crossover_Order_Stock
+git pull
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 3) Restart — on failure start.py prints the last lines of uvicorn.out
+python stop.py
+python start.py
+tail -50 logs/uvicorn.out
+```
+
+Also whitelist the **EC2 public IP** in Dhan API settings.
+
 ---
 
 ## Quick Reference
@@ -423,6 +450,7 @@ python start.py
 ```
 Project root:  2_EMA_Crossover_Order_Stock/
 Config file:   config/config.yaml
+Env file:      .env
 Log file:      logs/trading.log
 PID file:      run/bot.pid
 API port:      7001

@@ -45,6 +45,7 @@ run/
 *.log
 *.pid
 *.out
+**/security_id/equity-instrument-cache.csv
 
 # =============================================================================
 # Testing & type checking

@@ -125,6 +125,23 @@ def _print_status_poll(poll_number: int, data: dict, strategy: dict, trading: di
     )
 
 
+def _dump_file_tail(path: Path, title: str, lines: int = 40) -> None:
+    """Print the last lines of a log file to the CLI."""
+    print()
+    print(f"----- {title} (last {lines} lines) -----")
+    try:
+        if not path.exists():
+            print(f"(file not found: {path})")
+            return
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in content[-lines:]:
+            print(line)
+    except OSError as exc:
+        print(f"(could not read {path}: {exc})")
+    print("-" * 40)
+    sys.stdout.flush()
+
+
 def stream_startup_poll_logs(poll_count: int, timeout_seconds: float, process: subprocess.Popen) -> None:
     """
     Wait for poll_count completed polls via /status, print LTP + EMA to CLI,
@@ -153,9 +170,15 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float, process: s
         if process.poll() is not None:
             print()
             print(f"ERROR: Server process exited early (exit={process.returncode}).")
-            print(f"Check {UVICORN_OUT} for details.")
-            print("Tip: run with the project venv:")
-            print("  source venv/bin/activate && python start.py")
+            if process.returncode in (-9, 137):
+                print("Hint: process was likely OOM-killed (add 1–2 GB swap on the AWS VM).")
+            elif process.returncode == 1:
+                print("Hint: Python crash — see traceback below.")
+            _dump_file_tail(UVICORN_OUT, "logs/uvicorn.out")
+            _dump_file_tail(LOG_FILE, "logs/trading.log")
+            print("Tip: ensure venv is active and deps installed:")
+            print("  source venv/bin/activate && pip install -r requirements.txt")
+            print("  free -h   # check RAM; add swap if Mem available < 200MB")
             return
 
         try:
@@ -164,7 +187,6 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float, process: s
                 data = response.json()
                 poll_count_now = int(data.get("poll_count") or 0)
                 if poll_count_now > last_seen_count:
-                    # Print each new poll since last check
                     for _ in range(poll_count_now - last_seen_count):
                         if polls_printed >= poll_count:
                             break
@@ -265,15 +287,10 @@ def main() -> None:
     time.sleep(1.5)
     if process.poll() is not None:
         print(f"ERROR: Server exited immediately (code={process.returncode}).")
-        print(f"Last lines of {UVICORN_OUT}:")
-        try:
-            lines = UVICORN_OUT.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines[-30:]:
-                print(f"  {line}")
-        except OSError:
-            pass
-        print("Tip: use the project venv:")
-        print("  source venv/bin/activate && python start.py")
+        _dump_file_tail(UVICORN_OUT, "logs/uvicorn.out")
+        _dump_file_tail(LOG_FILE, "logs/trading.log")
+        print("Tip: use the project venv and install deps:")
+        print("  source venv/bin/activate && pip install -r requirements.txt")
         PID_FILE.unlink(missing_ok=True)
         sys.exit(1)
 
