@@ -192,15 +192,20 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:
 
 
 def main() -> None:
-    from app.config_loader import get_config_loader
+    from app.config_loader import get_config_loader, load_env_file
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     stop_existing_bot()
 
+    # Load .env into this process so the uvicorn child inherits credentials
+    load_env_file()
+
     loader = get_config_loader()
     try:
         loader.load()
+        # Fail fast if credentials are missing before starting the server
+        loader.get_broker_credentials()
         print_startup_banner()
     except Exception as exc:
         print(f"Startup failed: {exc}")

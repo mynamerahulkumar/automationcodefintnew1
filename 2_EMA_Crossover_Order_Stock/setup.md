@@ -112,15 +112,36 @@ You should see `OK` with no errors.
 
 ## 4. Configure the Bot
 
-Edit `config/config.yaml` in any text editor.
+### Credentials (`.env`) — required
 
-### Minimum required settings
+Copy the template and add your Dhan credentials:
+
+**macOS / Linux**
+
+```bash
+cp .env.example .env
+```
+
+**Windows (PowerShell / CMD)**
+
+```powershell
+copy .env.example .env
+```
+
+Edit `.env`:
+
+```env
+DHAN_CLIENT_ID=YOUR_CLIENT_ID
+DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
+```
+
+Do **not** put credentials in `config.yaml`. `.env` is gitignored and loaded automatically on startup.
+
+You can still override with shell environment variables if needed — they take precedence over `.env` values already in the process.
+
+### Trading settings (`config/config.yaml`)
 
 ```yaml
-broker:
-  client_id: "YOUR_DHAN_CLIENT_ID"
-  access_token: "YOUR_DHAN_ACCESS_TOKEN"
-
 trading:
   exchange: NSE
   segment: EQUITY
@@ -146,39 +167,6 @@ bot:
   log_level: INFO
   startup_poll_logs: 2 # polls shown on CLI at start, then detaches (0 = skip)
 ```
-
-### Credentials via environment variables (recommended)
-
-Instead of putting secrets in `config.yaml`, use env vars. They override the YAML values.
-
-**macOS / Linux**
-
-```bash
-export DHAN_CLIENT_ID="YOUR_CLIENT_ID"
-export DHAN_ACCESS_TOKEN="YOUR_ACCESS_TOKEN"
-```
-
-To persist across sessions, add those lines to `~/.bashrc`, `~/.zshrc`, or `~/.profile`.
-
-**Windows (PowerShell — current session only)**
-
-```powershell
-$env:DHAN_CLIENT_ID = "YOUR_CLIENT_ID"
-$env:DHAN_ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
-```
-
-**Windows (CMD — current session only)**
-
-```cmd
-set DHAN_CLIENT_ID=YOUR_CLIENT_ID
-set DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
-```
-
-**Windows (permanent — System Properties)**
-
-1. Search **"Environment Variables"** in Start menu.
-2. Under **User variables**, click **New**.
-3. Add `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN`.
 
 ### Security ID lookup
 
@@ -342,7 +330,7 @@ pip install -r requirements.txt
 
 ### `Broker credentials missing`
 
-Set `broker.client_id` and `broker.access_token` in `config/config.yaml`, or set `DHAN_CLIENT_ID` / `DHAN_ACCESS_TOKEN` environment variables.
+Create a `.env` file (copy from `.env.example`) and set `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN`.
 
 ### `Security ID not found for stock: ...`
 
@@ -412,8 +400,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-export DHAN_CLIENT_ID="..."
-export DHAN_ACCESS_TOKEN="..."
+cp .env.example .env
+# edit .env with DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN
 
 # Paper trade first
 python start.py

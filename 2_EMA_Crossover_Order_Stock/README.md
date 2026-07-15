@@ -47,13 +47,24 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Edit `config/config.yaml`:
+### Credentials (`.env`)
+
+Copy the example file and fill in your Dhan credentials:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` (never commit this file):
+
+```env
+DHAN_CLIENT_ID=YOUR_CLIENT_ID
+DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
+```
+
+### Trading settings (`config/config.yaml`)
 
 ```yaml
-broker:
-  client_id: "YOUR_CLIENT_ID"
-  access_token: "YOUR_ACCESS_TOKEN"
-
 trading:
   exchange: NSE
   segment: EQUITY          # EQUITY or OPTION
@@ -83,13 +94,6 @@ bot:
   cooldown_seconds: 60
   log_level: INFO
   startup_poll_logs: 2     # polls to show on CLI at start (0 = skip)
-```
-
-Credentials can also be set via environment variables:
-
-```bash
-export DHAN_CLIENT_ID="..."
-export DHAN_ACCESS_TOKEN="..."
 ```
 
 Security IDs are resolved automatically from `security_id/api-scrip-master.csv` using `stock_name`.
@@ -141,9 +145,9 @@ cd 2_EMA_Crossover_Order_Stock
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Set credentials via env vars (recommended)
-export DHAN_CLIENT_ID="..."
-export DHAN_ACCESS_TOKEN="..."
+# Read credentials from .env (copy .env.example → .env first)
+cp .env.example .env
+# edit .env with your DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN
 
 # Start with paper trading first
 python start.py
