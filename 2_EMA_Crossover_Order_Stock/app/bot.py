@@ -109,9 +109,14 @@ class TradingBot:
         cooldown = int(bot_cfg.get("cooldown_seconds", 60))
         one_position_only = bool(bot_cfg.get("one_position_only", True))
 
+        logger.info("Poll cycle starting")
+        self.state.set_poll_phase("starting")
+        flush_logger()
+
+        self.state.set_poll_phase("init_dhan_and_candles")
         candles = self.market_data.fetch_candles()
         if candles is None:
-            # Still try LTP so CLI can show current price even if candles fail
+            self.state.set_poll_phase("fetch_ltp")
             current_price = self.market_data.fetch_ltp()
             error = "Failed to fetch candle data (check Dhan token / market hours / network)"
             self.state.set_error(error)
@@ -125,8 +130,10 @@ class TradingBot:
             )
             return
 
+        self.state.set_poll_phase("compute_ema")
         result = self.strategy.evaluate(candles)
 
+        self.state.set_poll_phase("fetch_ltp")
         current_price = self.market_data.fetch_ltp()
         if current_price is None and candles.last_close is not None:
             current_price = candles.last_close

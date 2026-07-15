@@ -195,8 +195,12 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float, process: s
                     last_seen_count = poll_count_now
                 elif time.time() - last_wait_msg >= 10:
                     status = data.get("bot_status", "?")
+                    phase = data.get("poll_phase", "idle")
                     err = data.get("last_error")
-                    msg = f"  Still waiting for poll... status={status}"
+                    msg = (
+                        f"  Still waiting for poll... status={status} "
+                        f"phase={phase} poll_count={data.get('poll_count', 0)}"
+                    )
                     if err:
                         msg += f" error={err}"
                     print(msg, flush=True)
@@ -246,6 +250,16 @@ def main() -> None:
     bot_cfg = loader.get_bot_config()
     startup_poll_logs = int(bot_cfg.get("startup_poll_logs", 2))
     polling_seconds = loader.get_polling_seconds()
+
+    # Pre-build equity cache BEFORE launching uvicorn so first poll doesn't stall
+    try:
+        from app.dhan_client import _ensure_equity_instrument_cache
+
+        print("Preparing low-memory instrument cache...", flush=True)
+        cache = _ensure_equity_instrument_cache()
+        print(f"Instrument cache ready: {cache.name}", flush=True)
+    except Exception as exc:
+        print(f"Warning: could not prebuild instrument cache: {exc}", flush=True)
 
     env = os.environ.copy()
     # Avoid console handlers on uvicorn stdout (they go to uvicorn.out, not this CLI)
@@ -299,7 +313,7 @@ def main() -> None:
             print("Warning: Server did not respond in time — skipping startup poll display.")
             print(f"Check {UVICORN_OUT}")
         else:
-            # First poll includes Dhan client init + ~2s sleep inside historical API
+            # First poll includes Dhan client init on small VMs
             timeout = max(
                 polling_seconds * startup_poll_logs + 180,
                 240,

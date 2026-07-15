@@ -1,16 +1,22 @@
-"""Market data fetching via Dhan_SRP (security_id path — low memory)."""
+"""Market data fetching via Dhan SDK security_id path (low memory, no hangs)."""
 
 from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
 
+import pandas as pd
+
 from app.config_loader import ConfigLoader, get_config_loader
 from app.dhan_client import get_dhan_client
-from app.logger import get_logger
+from app.logger import flush_logger, get_logger
 from app.security_master import resolve_instrument
 
 logger = get_logger()
+
+# Dhan intraday charts only support the last ~5 trading days
+INTRADAY_DAYS = 5
+VALID_INTERVALS = {1, 5, 15, 25, 60}
 
 
 @dataclass
@@ -39,12 +45,20 @@ class MarketDataService:
         return resolve_instrument(self.config_loader.get_trading_config())
 
     def fetch_candles(self) -> CandleData | None:
-        """Fetch historical candles using security_id (avoids full-CSV copies)."""
+        """Fetch intraday candles using security_id via Dhan charts API."""
         trading = self.config_loader.get_trading_config()
         strategy = self.config_loader.get_strategy_config()
         stock_name = str(trading.get("stock_name", ""))
         timeframe = self.config_loader.parse_timeframe_minutes()
         slow_ema = int(strategy.get("slow_ema", 21))
+
+        if timeframe not in VALID_INTERVALS:
+            logger.error(
+                "Unsupported timeframe minutes=%s (Dhan allows %s)",
+                timeframe,
+                sorted(VALID_INTERVALS),
+            )
+            return None
 
         try:
             instrument = self._resolved()
@@ -54,45 +68,67 @@ class MarketDataService:
 
         security_id = str(instrument["security_id"])
         exchange_segment = str(instrument["exchange_segment"])
-        instrument_type = str(instrument.get("instrument_name", "EQUITY"))
+        instrument_type = str(instrument.get("instrument_name") or "EQUITY")
 
-        dhan = get_dhan_client(self.config_loader)
-
-        # Enough session days for slow EMA on intraday bars
-        days_back = max(5, (slow_ema * 3 * timeframe) // (6 * 60) + 2)
         to_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.datetime.now() - datetime.timedelta(days=days_back)).strftime(
-            "%Y-%m-%d"
+        from_date = (
+            datetime.datetime.now() - datetime.timedelta(days=INTRADAY_DAYS)
+        ).strftime("%Y-%m-%d")
+
+        logger.info(
+            "Fetching candles: %s id=%s segment=%s interval=%sm from=%s to=%s",
+            stock_name,
+            security_id,
+            exchange_segment,
+            timeframe,
+            from_date,
+            to_date,
         )
+        flush_logger()
 
         try:
-            # Prefer lightweight SDK path with known security_id
-            df = dhan.get_history_df(
+            dhan = get_dhan_client(self.config_loader)
+            response = dhan.Dhan.intraday_minute_data(
                 security_id=security_id,
                 exchange_segment=exchange_segment,
                 instrument_type=instrument_type,
                 from_date=from_date,
                 to_date=to_date,
-                interval=str(timeframe),
+                interval=int(timeframe),
             )
         except Exception as exc:
-            logger.warning(
-                "get_history_df failed (%s); falling back to get_historical_data",
-                exc,
-            )
+            logger.error("Candle API call failed for %s: %s", stock_name, exc)
+            flush_logger()
+            return None
+
+        if not isinstance(response, dict) or response.get("status") == "failure":
+            logger.error("Candle API failure for %s: %s", stock_name, response)
+            flush_logger()
+            return None
+
+        data = response.get("data")
+        if not data:
+            logger.warning("Empty candle payload for %s: %s", stock_name, response)
+            flush_logger()
+            return None
+
+        try:
+            df = pd.DataFrame(data)
+        except Exception as exc:
+            logger.error("Could not parse candle data for %s: %s", stock_name, exc)
+            return None
+
+        if df.empty or "close" not in df.columns:
+            logger.warning("No close prices for %s (cols=%s)", stock_name, list(df.columns))
+            return None
+
+        if "timestamp" in df.columns:
             try:
-                df = dhan.get_historical_data(stock_name, str(trading.get("exchange", "NSE")), str(timeframe))
-            except Exception as exc2:
-                logger.error("Failed to fetch candles for %s: %s", stock_name, exc2)
-                return None
-
-        if df is None or getattr(df, "empty", True):
-            logger.warning("Empty candle data for %s", stock_name)
-            return None
-
-        if "close" not in df.columns:
-            logger.error("Candle data missing close column for %s", stock_name)
-            return None
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(
+                    "Asia/Kolkata"
+                )
+            except Exception:
+                df["timestamp"] = df["timestamp"].astype(str)
 
         min_bars = max(slow_ema * 3, 60)
         if len(df) < slow_ema + 2:
@@ -111,47 +147,42 @@ class MarketDataService:
         else:
             timestamps = [str(i) for i in range(len(closes))]
 
+        logger.info("Candles ready for %s: %s bars, last_close=%s", stock_name, len(closes), closes[-1])
+        flush_logger()
         return CandleData(closes=closes, timestamps=timestamps)
 
     def fetch_ltp(self) -> float | None:
-        """Fetch LTP via quote API when possible (avoids scanning full instrument DF)."""
+        """Fetch LTP via ohlc/quote API; never call heavy get_ltp_data on cloud."""
         trading = self.config_loader.get_trading_config()
         stock_name = str(trading.get("stock_name", ""))
 
         try:
             instrument = self._resolved()
-        except (ValueError, FileNotFoundError):
-            instrument = {
-                "security_id": trading.get("security_id"),
-                "exchange_segment": "NSE_EQ",
-                "trading_symbol": stock_name,
-            }
+        except (ValueError, FileNotFoundError) as exc:
+            logger.error("LTP resolve failed: %s", exc)
+            return None
 
-        security_id = instrument.get("security_id")
+        security_id = str(instrument["security_id"])
         exchange_segment = str(instrument.get("exchange_segment") or "NSE_EQ")
-        symbol = str(instrument.get("trading_symbol") or stock_name)
 
         try:
             dhan = get_dhan_client(self.config_loader)
+            sdk = dhan.Dhan
+            payload = {exchange_segment: [int(security_id)]}
 
-            # Prefer quote_data with security_id — lighter than get_ltp_data
-            quote_fn = getattr(getattr(dhan, "Dhan", None), "quote_data", None) or getattr(
-                getattr(dhan, "Dhan", None), "ohlc_data", None
-            )
-            if quote_fn and security_id:
-                payload = {exchange_segment: [int(security_id)]}
-                raw = quote_fn(payload)
-                price = self._extract_ltp(raw, str(security_id))
-                if price is not None:
-                    return price
-
-            ltp_data = dhan.get_ltp_data(symbol)
-            if isinstance(ltp_data, dict):
-                for value in ltp_data.values():
-                    if isinstance(value, (int, float)) and value > 0:
-                        return float(value)
+            for method_name in ("ohlc_data", "quote_data", "ticker_data"):
+                fn = getattr(sdk, method_name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    raw = fn(payload)
+                    price = self._extract_ltp(raw, security_id)
+                    if price is not None:
+                        return price
+                except Exception as exc:
+                    logger.warning("%s failed for %s: %s", method_name, stock_name, exc)
         except Exception as exc:
-            logger.error("LTP fetch failed for %s: %s", symbol, exc)
+            logger.error("LTP fetch failed for %s: %s", stock_name, exc)
         return None
 
     @staticmethod
@@ -163,21 +194,23 @@ class MarketDataService:
         if not isinstance(data, dict):
             return None
 
-        # Nested by segment then security_id
         for segment_data in data.values():
             if not isinstance(segment_data, dict):
                 continue
-            entry = segment_data.get(security_id) or segment_data.get(int(security_id)) if security_id.isdigit() else None
-            if isinstance(entry, dict):
-                for key in ("last_price", "LTP", "ltp", "last_trade_price", "close"):
-                    val = entry.get(key)
-                    if isinstance(val, (int, float)) and val > 0:
-                        return float(val)
-                ohlc = entry.get("ohlc") if isinstance(entry.get("ohlc"), dict) else {}
-                for key in ("close", "last_price", "ltp"):
-                    val = ohlc.get(key)
-                    if isinstance(val, (int, float)) and val > 0:
-                        return float(val)
+            entry = segment_data.get(security_id)
+            if entry is None and security_id.isdigit():
+                entry = segment_data.get(int(security_id))
+            if not isinstance(entry, dict):
+                continue
+            for key in ("last_price", "LTP", "ltp", "last_trade_price", "close"):
+                val = entry.get(key)
+                if isinstance(val, (int, float)) and val > 0:
+                    return float(val)
+            ohlc = entry.get("ohlc") if isinstance(entry.get("ohlc"), dict) else {}
+            for key in ("close", "last_price", "ltp"):
+                val = ohlc.get(key)
+                if isinstance(val, (int, float)) and val > 0:
+                    return float(val)
         return None
 
 

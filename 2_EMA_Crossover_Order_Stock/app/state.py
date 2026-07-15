@@ -47,10 +47,17 @@ class BotState:
         self.poll_count: int = 0
         self.last_poll_at: str | None = None
         self.last_error: str | None = None
+        self.poll_phase: str = "idle"
         self.strategy_name: str = ""
         self.symbol: str = ""
         self.security_id: str = ""
         self.poll_interval: int = 30
+
+    def set_poll_phase(self, phase: str) -> None:
+        """Update current poll phase for CLI progress (does not bump poll_count)."""
+        with self._lock:
+            self.poll_phase = phase
+            self.last_poll_at = datetime.now(timezone.utc).isoformat()
 
     def update_poll(
         self,
@@ -65,6 +72,7 @@ class BotState:
         with self._lock:
             self.poll_count += 1
             self.last_poll_at = datetime.now(timezone.utc).isoformat()
+            self.poll_phase = "done"
             self.fast_ema = fast_ema
             self.slow_ema = slow_ema
             if current_price is not None:
@@ -169,6 +177,7 @@ class BotState:
                 "last_trade": self.last_trade.to_dict(),
                 "poll_interval": self.poll_interval,
                 "poll_count": self.poll_count,
+                "poll_phase": self.poll_phase,
                 "last_poll_at": self.last_poll_at,
                 "last_error": self.last_error,
             }
