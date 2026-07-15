@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 
 def format_price(value: float | None) -> str:
     """Format a price for display."""
@@ -67,6 +69,7 @@ def print_poll_summary_block(
     slow_ema: float | None,
     signal: str | None,
     candle_time: str | None,
+    last_error: str | None = None,
 ) -> None:
     """Print a readable poll summary block to the CLI."""
     signal_text = signal if signal else "None"
@@ -77,9 +80,12 @@ def print_poll_summary_block(
     print()
     print(f"  Poll #{poll_number} — {symbol} [{segment}]")
     print(f"  {price_label:<22}: {format_price(current_price)}")
-    print(f"  Fast EMA ({fast_period}){' ' * (14 - len(str(fast_period)))}: {format_ema(fast_ema)}")
-    print(f"  Slow EMA ({slow_period}){' ' * (14 - len(str(slow_period)))}: {format_ema(slow_ema)}")
-    print(f"  Trend                 : {trend}")
-    print(f"  Signal                : {signal_text}")
-    print(f"  Candle Time           : {candle_text}")
+    print(f"  {'Fast EMA (' + str(fast_period) + ')':<22}: {format_ema(fast_ema)}")
+    print(f"  {'Slow EMA (' + str(slow_period) + ')':<22}: {format_ema(slow_ema)}")
+    print(f"  {'Trend':<22}: {trend}")
+    print(f"  {'Signal':<22}: {signal_text}")
+    print(f"  {'Candle Time':<22}: {candle_text}")
+    if last_error:
+        print(f"  {'Error':<22}: {last_error}")
     print()
+    sys.stdout.flush()

@@ -20,9 +20,9 @@ UVICORN_OUT = LOG_DIR / "uvicorn.out"
 HOST = "0.0.0.0"
 PORT = 7001
 HEALTH_URL = f"http://127.0.0.1:{PORT}/health"
-SERVER_READY_TIMEOUT = 30
-POLL_LOG_MARKER = "POLL SUMMARY |"
-LOG_TAIL_INTERVAL = 0.3
+STATUS_URL = f"http://127.0.0.1:{PORT}/status"
+SERVER_READY_TIMEOUT = 45
+STATUS_POLL_INTERVAL = 1.0
 
 
 def print_startup_banner() -> None:
@@ -78,6 +78,7 @@ def print_startup_banner() -> None:
     print()
     print("Status            RUNNING")
     print("=" * 34)
+    sys.stdout.flush()
 
 
 def stop_existing_bot() -> None:
@@ -86,109 +87,119 @@ def stop_existing_bot() -> None:
 
     if stop_bot(PID_FILE):
         print("Previous bot session stopped.")
+        time.sleep(1)
 
 
 def wait_for_server(timeout: int = SERVER_READY_TIMEOUT) -> bool:
     """Wait until the API health endpoint responds."""
-    for _ in range(timeout * 2):
+    for i in range(timeout * 2):
         try:
             response = requests.get(HEALTH_URL, timeout=1)
             if response.status_code == 200:
                 return True
         except requests.RequestException:
             pass
+        if i % 4 == 0:
+            print(f"  Waiting for server... ({i // 2}s)", flush=True)
         time.sleep(0.5)
     return False
 
 
-def _parse_poll_summary(line: str) -> dict[str, str] | None:
-    """Parse key fields from a POLL SUMMARY log line."""
-    if POLL_LOG_MARKER not in line:
-        return None
+def _print_status_poll(poll_number: int, data: dict, strategy: dict, trading: dict) -> None:
+    """Print one poll block from /status JSON."""
+    from app.cli_display import print_poll_summary_block
 
-    payload = line.split(POLL_LOG_MARKER, 1)[-1].strip()
-    parts = [part.strip() for part in payload.split("|")]
-    if len(parts) < 7:
-        return None
-
-    symbol_segment = parts[0]
-    symbol = symbol_segment.split("(")[0].strip()
-    segment = "EQUITY"
-    if "(" in symbol_segment and ")" in symbol_segment:
-        segment = symbol_segment.split("(", 1)[1].rsplit(")", 1)[0].strip()
-
-    def _value(part: str) -> str:
-        return part.split(":", 1)[-1].strip() if ":" in part else part
-
-    return {
-        "symbol": symbol,
-        "segment": segment,
-        "ltp": _value(parts[1]),
-        "fast_ema": parts[2],
-        "slow_ema": parts[3],
-        "trend": _value(parts[4]),
-        "signal": _value(parts[5]),
-        "candle": _value(parts[6]),
-    }
+    segment = str(trading.get("segment", "EQUITY"))
+    print_poll_summary_block(
+        poll_number=poll_number,
+        symbol=str(data.get("symbol") or trading.get("stock_name") or ""),
+        segment=segment,
+        fast_period=int(strategy.get("fast_ema", 9)),
+        slow_period=int(strategy.get("slow_ema", 21)),
+        current_price=data.get("current_price"),
+        fast_ema=data.get("fast_ema"),
+        slow_ema=data.get("slow_ema"),
+        signal=data.get("current_signal"),
+        candle_time=data.get("last_candle_time"),
+        last_error=data.get("last_error"),
+    )
 
 
-def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:
+def stream_startup_poll_logs(poll_count: int, timeout_seconds: float, process: subprocess.Popen) -> None:
     """
-    Stream poll summaries to the CLI until poll_count polls are logged,
+    Wait for poll_count completed polls via /status, print LTP + EMA to CLI,
     then return so start.py can exit while the bot keeps running.
     """
     if poll_count <= 0:
         return
 
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not LOG_FILE.exists():
-        LOG_FILE.touch()
+    from app.config_loader import get_config_loader
+
+    loader = get_config_loader()
+    strategy = loader.get_strategy_config()
+    trading = loader.get_trading_config()
 
     deadline = time.time() + timeout_seconds
-    polls_seen = 0
+    last_seen_count = 0
+    polls_printed = 0
 
     print()
     print(f"Live poll updates (showing {poll_count} poll(s))...")
-    print("=" * 55)
+    print("First poll may take 15–40s (Dhan client + candle fetch).")
+    print("=" * 55, flush=True)
 
-    with open(LOG_FILE, encoding="utf-8") as handle:
-        handle.seek(0, 2)
-        while polls_seen < poll_count and time.time() < deadline:
-            line = handle.readline()
-            if line:
-                if POLL_LOG_MARKER in line:
-                    polls_seen += 1
-                    parsed = _parse_poll_summary(line)
-                    if parsed:
-                        price_label = (
-                            "Option Price (LTP)"
-                            if parsed["segment"].upper() == "OPTION"
-                            else "Stock Price (LTP)"
-                        )
-                        print()
-                        print(f"  Poll #{polls_seen} — {parsed['symbol']} [{parsed['segment']}]")
-                        print(f"  {price_label:<22}: {parsed['ltp']}")
-                        for key in ("fast_ema", "slow_ema"):
-                            label, value = parsed[key].split(":", 1)
-                            print(f"  {label.strip():<22}: {value.strip()}")
-                        print(f"  {'Trend':<22}: {parsed['trend']}")
-                        print(f"  {'Signal':<22}: {parsed['signal']}")
-                        print(f"  {'Candle Time':<22}: {parsed['candle']}")
-                    else:
-                        print(line, end="")
-            else:
-                time.sleep(LOG_TAIL_INTERVAL)
+    last_wait_msg = 0.0
+    while polls_printed < poll_count and time.time() < deadline:
+        if process.poll() is not None:
+            print()
+            print(f"ERROR: Server process exited early (exit={process.returncode}).")
+            print(f"Check {UVICORN_OUT} for details.")
+            print("Tip: run with the project venv:")
+            print("  source venv/bin/activate && python start.py")
+            return
+
+        try:
+            response = requests.get(STATUS_URL, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                poll_count_now = int(data.get("poll_count") or 0)
+                if poll_count_now > last_seen_count:
+                    # Print each new poll since last check
+                    for _ in range(poll_count_now - last_seen_count):
+                        if polls_printed >= poll_count:
+                            break
+                        polls_printed += 1
+                        _print_status_poll(polls_printed, data, strategy, trading)
+                    last_seen_count = poll_count_now
+                elif time.time() - last_wait_msg >= 10:
+                    status = data.get("bot_status", "?")
+                    err = data.get("last_error")
+                    msg = f"  Still waiting for poll... status={status}"
+                    if err:
+                        msg += f" error={err}"
+                    print(msg, flush=True)
+                    last_wait_msg = time.time()
+        except requests.RequestException as exc:
+            if time.time() - last_wait_msg >= 10:
+                print(f"  Waiting for status API... ({exc.__class__.__name__})", flush=True)
+                last_wait_msg = time.time()
+
+        time.sleep(STATUS_POLL_INTERVAL)
 
     print("=" * 55)
-    if polls_seen < poll_count:
+    if polls_printed < poll_count:
         print(
-            f"Note: Only {polls_seen}/{poll_count} poll(s) logged within "
-            f"{int(timeout_seconds)}s — bot is still running."
+            f"Note: Only {polls_printed}/{poll_count} poll(s) within "
+            f"{int(timeout_seconds)}s — bot may still be running."
         )
+        print(f"Check status:   curl {STATUS_URL}")
+        print(f"Check logs:     python logs.py")
+        print(f"Uvicorn out:    {UVICORN_OUT}")
     print("CLI log stream ended — bot continues running in background.")
-    print(f"Tail logs:      python logs.py")
-    print(f"Stop bot:       python stop.py")
+    print("Tail logs:      python logs.py")
+    print("Stop bot:       python stop.py")
     print(f"Log file:       {LOG_FILE}")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -204,7 +215,6 @@ def main() -> None:
     loader = get_config_loader()
     try:
         loader.load()
-        # Fail fast if credentials are missing before starting the server
         loader.get_broker_credentials()
         print_startup_banner()
     except Exception as exc:
@@ -216,8 +226,8 @@ def main() -> None:
     polling_seconds = loader.get_polling_seconds()
 
     env = os.environ.copy()
-    if sys.stdout.isatty():
-        env["LOG_CONSOLE"] = "1"
+    # Avoid console handlers on uvicorn stdout (they go to uvicorn.out, not this CLI)
+    env.pop("LOG_CONSOLE", None)
 
     cmd = [
         sys.executable,
@@ -249,19 +259,37 @@ def main() -> None:
 
     PID_FILE.write_text(str(process.pid), encoding="utf-8")
     print(f"Started SRP Trading Engine on {HOST}:{PORT} (PID {process.pid})")
+    print(f"Python: {sys.executable}", flush=True)
+
+    # Quick exit detection (missing deps / import errors)
+    time.sleep(1.5)
+    if process.poll() is not None:
+        print(f"ERROR: Server exited immediately (code={process.returncode}).")
+        print(f"Last lines of {UVICORN_OUT}:")
+        try:
+            lines = UVICORN_OUT.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines[-30:]:
+                print(f"  {line}")
+        except OSError:
+            pass
+        print("Tip: use the project venv:")
+        print("  source venv/bin/activate && python start.py")
+        PID_FILE.unlink(missing_ok=True)
+        sys.exit(1)
 
     if startup_poll_logs > 0:
         if not wait_for_server():
-            print("Warning: Server did not respond in time — skipping startup log stream.")
+            print("Warning: Server did not respond in time — skipping startup poll display.")
+            print(f"Check {UVICORN_OUT}")
         else:
-            # Buffer for Dhan API latency (historical data calls include delays)
+            # First poll includes Dhan client init + ~2s sleep inside historical API
             timeout = max(
-                polling_seconds * startup_poll_logs + 120,
-                polling_seconds * 2 + 60,
+                polling_seconds * startup_poll_logs + 180,
+                240,
             )
-            stream_startup_poll_logs(startup_poll_logs, timeout)
+            stream_startup_poll_logs(startup_poll_logs, timeout, process)
     else:
-        print(f"Tail logs:      python logs.py")
+        print("Tail logs:      python logs.py")
         print(f"Log file:       {LOG_FILE}")
 
 

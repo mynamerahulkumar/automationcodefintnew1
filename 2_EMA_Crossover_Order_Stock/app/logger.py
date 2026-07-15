@@ -37,6 +37,8 @@ def setup_logger(level: str = "INFO", console: bool | None = None) -> logging.Lo
             encoding="utf-8",
         )
         _FILE_HANDLER.setFormatter(formatter)
+        # Flush promptly so start.py can tail poll summaries in near-real-time
+        _FILE_HANDLER.setLevel(logging.INFO)
         logger.addHandler(_FILE_HANDLER)
     else:
         _FILE_HANDLER.setFormatter(formatter)
@@ -59,3 +61,13 @@ def get_logger() -> logging.Logger:
     if not logger.handlers:
         return setup_logger(console=False)
     return logger
+
+
+def flush_logger() -> None:
+    """Flush all handlers so log tails see new lines immediately."""
+    logger = logging.getLogger("srp_trading_engine")
+    for handler in logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
