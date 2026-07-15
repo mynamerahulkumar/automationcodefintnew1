@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gc
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ logger = get_logger()
 
 _dhan_client: Dhansrp | None = None
 _dhan_credentials_key: tuple[str, str] | None = None
+_dhan_lock = threading.Lock()
 
 
 def _ensure_equity_instrument_cache() -> Path:
@@ -94,28 +96,30 @@ def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
     client_id, access_token = loader.get_broker_credentials()
     cred_key = (client_id, access_token)
 
-    if _dhan_client is not None and _dhan_credentials_key == cred_key:
+    with _dhan_lock:
+        if _dhan_client is not None and _dhan_credentials_key == cred_key:
+            return _dhan_client
+
+        from Dhan_SRP import Dhansrp  # noqa: WPS433 — lazy import saves memory at startup
+
+        cache_path = _ensure_equity_instrument_cache()
+        logger.info("Initializing Dhan client (instrument cache=%s)", cache_path.name)
+        _dhan_client = Dhansrp(
+            ClientCode=client_id,
+            token_id=access_token,
+            enable_file_logging=False,
+            instrument_cache_path=str(cache_path),
+            persist_instrument_file=False,
+        )
+        _trim_instrument_df(_dhan_client)
+        _dhan_credentials_key = cred_key
         return _dhan_client
-
-    from Dhan_SRP import Dhansrp  # noqa: WPS433 — lazy import saves memory at startup
-
-    cache_path = _ensure_equity_instrument_cache()
-    logger.info("Initializing Dhan client (instrument cache=%s)", cache_path.name)
-    _dhan_client = Dhansrp(
-        ClientCode=client_id,
-        token_id=access_token,
-        enable_file_logging=False,
-        instrument_cache_path=str(cache_path),
-        persist_instrument_file=False,
-    )
-    _trim_instrument_df(_dhan_client)
-    _dhan_credentials_key = cred_key
-    return _dhan_client
 
 
 def reset_dhan_client() -> None:
     """Reset the cached Dhan client (e.g. after credential reload)."""
     global _dhan_client, _dhan_credentials_key
-    _dhan_client = None
-    _dhan_credentials_key = None
+    with _dhan_lock:
+        _dhan_client = None
+        _dhan_credentials_key = None
     gc.collect()

@@ -48,6 +48,22 @@ async def lifespan(_: FastAPI):
             get_security_master_path().name,
         )
         bot.start()
+        # Warm Dhan in background so /health is available while client loads
+        import threading
+        from app.dhan_client import get_dhan_client
+
+        def _warm_dhan() -> None:
+            state.set_poll_phase("warming_dhan")
+            try:
+                get_dhan_client(loader)
+                logger.info("Dhan client warmed successfully")
+                if state.poll_phase == "warming_dhan":
+                    state.set_poll_phase("idle")
+            except Exception as exc:
+                logger.exception("Dhan warm-up failed: %s", exc)
+                state.set_error(f"Dhan warm-up failed: {exc}")
+
+        threading.Thread(target=_warm_dhan, name="dhan-warm", daemon=True).start()
     except ConfigError as exc:
         logger.error("Startup config error: %s", exc)
     except Exception:

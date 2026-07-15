@@ -23,6 +23,8 @@ HEALTH_URL = f"http://127.0.0.1:{PORT}/health"
 STATUS_URL = f"http://127.0.0.1:{PORT}/status"
 SERVER_READY_TIMEOUT = 45
 STATUS_POLL_INTERVAL = 1.0
+# Printed at startup — if AWS does not show this string, code was not pulled
+ENGINE_BUILD = "ema-poll-v3-2026-07-15"
 
 
 def print_startup_banner() -> None:
@@ -49,6 +51,8 @@ def print_startup_banner() -> None:
     print("=" * 34)
     print("SRP Trading Engine")
     print("=" * 34)
+    print()
+    print(f"Build             {ENGINE_BUILD}")
     print()
     print(f"Mode              {mode}")
     print()
