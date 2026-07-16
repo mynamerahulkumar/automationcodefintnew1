@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from core.logger import get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 SECURITY_MASTER_PATH = PROJECT_ROOT / "security_id" / "api-scrip-master.csv"
 
 logger = get_logger()
@@ -23,6 +25,21 @@ VALID_MODES = {"EMA", "RSI", "EMA_RSI"}
 
 _EQUITY_INDEX: dict[tuple[str, str], dict[str, Any]] | None = None
 _OPTION_CACHE: dict[tuple[str, str, str, float, str], dict[str, Any]] = {}
+_ENV_LOADED = False
+
+
+def load_env_file(env_path: Path | str | None = None) -> Path | None:
+    """Load credentials and other vars from .env into os.environ (once)."""
+    global _ENV_LOADED
+    path = Path(env_path) if env_path else DEFAULT_ENV_PATH
+    if path.exists():
+        load_dotenv(path, override=False)
+        _ENV_LOADED = True
+        return path
+    if not _ENV_LOADED:
+        load_dotenv(override=False)
+        _ENV_LOADED = True
+    return path if path.exists() else None
 
 
 class ConfigError(Exception):
@@ -227,6 +244,7 @@ class ConfigLoader:
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._config: dict[str, Any] = {}
         self._resolved_instrument: dict[str, Any] | None = None
+        load_env_file()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -249,22 +267,30 @@ class ConfigLoader:
         self._config = raw
         self._resolved_instrument = None
         logger.info("Configuration loaded from %s", self.config_path)
+        env_path = load_env_file()
+        if env_path and env_path.exists():
+            logger.info("Credentials loaded from %s", env_path)
         return self._config
 
     def reload(self) -> dict[str, Any]:
-        """Reload configuration from disk."""
+        """Reload .env and configuration from disk."""
+        global _ENV_LOADED
+        _ENV_LOADED = False
+        load_dotenv(DEFAULT_ENV_PATH, override=True)
+        _ENV_LOADED = True
+        logger.info("Reloading configuration from %s", self.config_path)
         return self.load()
 
     def get_broker_credentials(self) -> tuple[str, str]:
-        """Return Dhan credentials with environment overrides."""
-        broker = self.config.get("broker", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or broker.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or broker.get("access_token", "")
+        """Return Dhan client_id and access_token from .env / environment."""
+        load_env_file()
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
 
         if not client_id or not access_token:
             raise ConfigError(
-                "Broker credentials missing. Set broker.client_id and broker.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
+                f"in {DEFAULT_ENV_PATH} (copy from .env.example)."
             )
         return str(client_id), str(access_token)
 

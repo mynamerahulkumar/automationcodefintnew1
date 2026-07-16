@@ -1,4 +1,4 @@
-"""Market data fetching via Dhan SDK security_id path (low memory, no hangs)."""
+"""Market data fetching via Dhan SDK security_id path (low memory)."""
 
 from __future__ import annotations
 
@@ -35,17 +35,70 @@ class CandleData:
             self.last_timestamp = str(self.timestamps[-1])
 
 
+@dataclass
+class CandleFetchResult:
+    """Candle fetch outcome with a human-readable error if failed."""
+
+    candles: CandleData | None
+    error: str | None = None
+
+
+def _format_dhan_failure(response: dict | None) -> str:
+    """Extract a short actionable message from a Dhan API failure payload."""
+    if not isinstance(response, dict):
+        return f"Unexpected Dhan response: {response!r}"
+
+    remarks = response.get("remarks")
+    data = response.get("data")
+    parts: list[str] = []
+
+    if isinstance(remarks, dict):
+        for key in ("error_message", "error_code", "error_type", "message"):
+            val = remarks.get(key)
+            if val not in (None, ""):
+                parts.append(f"{key}={val}")
+        if not parts:
+            parts.append(str(remarks))
+    elif remarks not in (None, ""):
+        parts.append(str(remarks))
+
+    if data not in (None, "", {}):
+        parts.append(f"data={data}")
+
+    text = "; ".join(parts) if parts else str(response)
+    lower = text.lower()
+    if "invalid ip" in lower or "dh-905" in lower or "ip" in lower and "whitelist" in lower:
+        return (
+            f"{text} | ACTION: Whitelist this AWS public IP in Dhan → "
+            "My Profile → Access → API → IP Whitelist"
+        )
+    if "token" in lower or "auth" in lower or "unauthorized" in lower or "401" in lower:
+        return f"{text} | ACTION: Refresh DHAN_ACCESS_TOKEN in .env on the AWS server"
+    if not text or text in ("{'error_code': None, 'error_type': None, 'error_message': None}",):
+        return (
+            "Dhan returned empty failure (often Invalid IP / expired token / no Data API access). "
+            "Whitelist AWS public IP in Dhan and verify .env token."
+        )
+    return text
+
+
 class MarketDataService:
     """Fetches OHLCV candles for strategy evaluation."""
 
     def __init__(self, config_loader: ConfigLoader | None = None) -> None:
         self.config_loader = config_loader or get_config_loader()
+        self.last_error: str | None = None
 
     def _resolved(self) -> dict:
         return resolve_instrument(self.config_loader.get_trading_config())
 
     def fetch_candles(self) -> CandleData | None:
-        """Fetch intraday candles using security_id via Dhan charts API."""
+        """Backward-compatible wrapper — prefer fetch_candles_result()."""
+        return self.fetch_candles_result().candles
+
+    def fetch_candles_result(self) -> CandleFetchResult:
+        """Fetch intraday candles; always return structured success/error."""
+        self.last_error = None
         trading = self.config_loader.get_trading_config()
         strategy = self.config_loader.get_strategy_config()
         stock_name = str(trading.get("stock_name", ""))
@@ -53,22 +106,37 @@ class MarketDataService:
         slow_ema = int(strategy.get("slow_ema", 21))
 
         if timeframe not in VALID_INTERVALS:
-            logger.error(
-                "Unsupported timeframe minutes=%s (Dhan allows %s)",
-                timeframe,
-                sorted(VALID_INTERVALS),
-            )
-            return None
+            err = f"Unsupported timeframe minutes={timeframe} (allowed {sorted(VALID_INTERVALS)})"
+            self.last_error = err
+            logger.error(err)
+            return CandleFetchResult(None, err)
 
         try:
             instrument = self._resolved()
         except (ValueError, FileNotFoundError) as exc:
-            logger.error("Instrument resolve failed: %s", exc)
-            return None
+            err = f"Instrument resolve failed: {exc}"
+            self.last_error = err
+            logger.error(err)
+            return CandleFetchResult(None, err)
 
         security_id = str(instrument["security_id"])
         exchange_segment = str(instrument["exchange_segment"])
         instrument_type = str(instrument.get("instrument_name") or "EQUITY")
+
+        # Prefer Dhan SDK constants when available (same values Dhan_SRP uses)
+        try:
+            dhan = get_dhan_client(self.config_loader)
+            sdk_seg = getattr(dhan.Dhan, "NSE", None) if exchange_segment == "NSE_EQ" else None
+            if exchange_segment == "BSE_EQ":
+                sdk_seg = getattr(dhan.Dhan, "BSE", None)
+            if sdk_seg:
+                exchange_segment = sdk_seg
+        except Exception as exc:
+            err = f"Dhan client init failed: {exc}"
+            self.last_error = err
+            logger.error(err)
+            flush_logger()
+            return CandleFetchResult(None, err)
 
         to_date = datetime.datetime.now().strftime("%Y-%m-%d")
         from_date = (
@@ -87,7 +155,6 @@ class MarketDataService:
         flush_logger()
 
         try:
-            dhan = get_dhan_client(self.config_loader)
             response = dhan.Dhan.intraday_minute_data(
                 security_id=security_id,
                 exchange_segment=exchange_segment,
@@ -97,30 +164,42 @@ class MarketDataService:
                 interval=int(timeframe),
             )
         except Exception as exc:
-            logger.error("Candle API call failed for %s: %s", stock_name, exc)
+            err = f"Candle API exception: {exc}"
+            self.last_error = err
+            logger.error(err)
             flush_logger()
-            return None
+            return CandleFetchResult(None, err)
 
         if not isinstance(response, dict) or response.get("status") == "failure":
+            err = _format_dhan_failure(response if isinstance(response, dict) else None)
+            self.last_error = err
             logger.error("Candle API failure for %s: %s", stock_name, response)
             flush_logger()
-            return None
+            return CandleFetchResult(None, err)
 
         data = response.get("data")
         if not data:
+            err = _format_dhan_failure(response)
+            if "empty" not in err.lower():
+                err = f"Empty candle payload from Dhan. {err}"
+            self.last_error = err
             logger.warning("Empty candle payload for %s: %s", stock_name, response)
             flush_logger()
-            return None
+            return CandleFetchResult(None, err)
 
         try:
             df = pd.DataFrame(data)
         except Exception as exc:
-            logger.error("Could not parse candle data for %s: %s", stock_name, exc)
-            return None
+            err = f"Could not parse candle data: {exc}"
+            self.last_error = err
+            logger.error(err)
+            return CandleFetchResult(None, err)
 
         if df.empty or "close" not in df.columns:
-            logger.warning("No close prices for %s (cols=%s)", stock_name, list(df.columns))
-            return None
+            err = f"No close prices in candle data (cols={list(df.columns)})"
+            self.last_error = err
+            logger.warning(err)
+            return CandleFetchResult(None, err)
 
         if "timestamp" in df.columns:
             try:
@@ -130,16 +209,13 @@ class MarketDataService:
             except Exception:
                 df["timestamp"] = df["timestamp"].astype(str)
 
-        min_bars = max(slow_ema * 3, 60)
         if len(df) < slow_ema + 2:
-            logger.warning(
-                "Insufficient candles for %s: got %s, need at least %s",
-                stock_name,
-                len(df),
-                slow_ema + 2,
-            )
-            return None
+            err = f"Insufficient candles: got {len(df)}, need at least {slow_ema + 2}"
+            self.last_error = err
+            logger.warning(err)
+            return CandleFetchResult(None, err)
 
+        min_bars = max(slow_ema * 3, 60)
         tail = df.tail(min_bars)
         closes = [float(x) for x in tail["close"].tolist()]
         if "timestamp" in tail.columns:
@@ -149,7 +225,7 @@ class MarketDataService:
 
         logger.info("Candles ready for %s: %s bars, last_close=%s", stock_name, len(closes), closes[-1])
         flush_logger()
-        return CandleData(closes=closes, timestamps=timestamps)
+        return CandleFetchResult(CandleData(closes=closes, timestamps=timestamps), None)
 
     def fetch_ltp(self) -> float | None:
         """Fetch LTP via ohlc/quote API; never call heavy get_ltp_data on cloud."""
@@ -168,6 +244,9 @@ class MarketDataService:
         try:
             dhan = get_dhan_client(self.config_loader)
             sdk = dhan.Dhan
+            # Map to SDK segment constant if present
+            if exchange_segment == "NSE_EQ" and getattr(sdk, "NSE", None):
+                exchange_segment = sdk.NSE
             payload = {exchange_segment: [int(security_id)]}
 
             for method_name in ("ohlc_data", "quote_data", "ticker_data"):
@@ -176,6 +255,9 @@ class MarketDataService:
                     continue
                 try:
                     raw = fn(payload)
+                    if isinstance(raw, dict) and raw.get("status") == "failure":
+                        logger.warning("%s failure: %s", method_name, _format_dhan_failure(raw))
+                        continue
                     price = self._extract_ltp(raw, security_id)
                     if price is not None:
                         return price

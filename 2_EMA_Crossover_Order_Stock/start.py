@@ -24,7 +24,7 @@ STATUS_URL = f"http://127.0.0.1:{PORT}/status"
 SERVER_READY_TIMEOUT = 45
 STATUS_POLL_INTERVAL = 1.0
 # Printed at startup — if AWS does not show this string, code was not pulled
-ENGINE_BUILD = "ema-poll-v3-2026-07-15"
+ENGINE_BUILD = "ema-poll-v4-dhan-diagnose-2026-07-15"
 
 
 def print_startup_banner() -> None:

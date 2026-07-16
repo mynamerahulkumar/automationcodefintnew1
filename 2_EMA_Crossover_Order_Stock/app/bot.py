@@ -114,11 +114,14 @@ class TradingBot:
         flush_logger()
 
         self.state.set_poll_phase("init_dhan_and_candles")
-        candles = self.market_data.fetch_candles()
+        fetch = self.market_data.fetch_candles_result()
+        candles = fetch.candles
         if candles is None:
             self.state.set_poll_phase("fetch_ltp")
             current_price = self.market_data.fetch_ltp()
-            error = "Failed to fetch candle data (check Dhan token / market hours / network)"
+            error = fetch.error or self.market_data.last_error or (
+                "Failed to fetch candle data (check Dhan token / AWS IP whitelist / network)"
+            )
             self.state.set_error(error)
             self._emit_poll_summary(
                 current_price=current_price,

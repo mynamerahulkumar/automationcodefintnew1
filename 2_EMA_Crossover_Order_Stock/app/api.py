@@ -109,6 +109,8 @@ async def health() -> PlainTextResponse:
 @app.get("/status")
 async def status() -> dict[str, Any]:
     """Return bot status, strategy info, and last trade details."""
+    from app.market_data import get_market_data_service
+
     loader = get_config_loader()
     bot_cfg = loader.get_bot_config()
     risk = loader.get_risk_config()
@@ -119,7 +121,41 @@ async def status() -> dict[str, Any]:
         "stoploss_percent": risk.get("stoploss_percent"),
         "trailing_sl": risk.get("trailing_sl", False),
     }
+    snapshot["market_data_error"] = get_market_data_service().last_error
     return snapshot
+
+
+@app.get("/diagnose-dhan")
+async def diagnose_dhan() -> dict[str, Any]:
+    """One-shot Dhan candle/LTP check for cloud debugging."""
+    import urllib.request
+
+    from app.market_data import get_market_data_service
+
+    loader = get_config_loader()
+    trading = loader.get_trading_config()
+    public_ip = None
+    try:
+        public_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+    except Exception as exc:
+        public_ip = f"could not detect: {exc}"
+
+    md = get_market_data_service()
+    result = md.fetch_candles_result()
+    ltp = md.fetch_ltp()
+    return {
+        "aws_public_ip": public_ip,
+        "symbol": trading.get("stock_name"),
+        "candle_ok": result.candles is not None,
+        "candle_bars": len(result.candles.closes) if result.candles else 0,
+        "last_close": result.candles.last_close if result.candles else None,
+        "candle_error": result.error,
+        "ltp": ltp,
+        "hint": (
+            "If candle_ok is false: whitelist aws_public_ip in Dhan API settings "
+            "and ensure DHAN_ACCESS_TOKEN in .env is valid."
+        ),
+    }
 
 
 @app.post("/reload-config")
