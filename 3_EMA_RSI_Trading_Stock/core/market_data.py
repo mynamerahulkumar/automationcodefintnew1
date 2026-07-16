@@ -1,15 +1,19 @@
-"""Market data fetching via Dhan_SRP."""
+"""Market data fetching via lightweight dhanhq (no Dhan_SRP / pandas)."""
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from core.config_loader import ConfigLoader, get_config_loader, resolve_instrument
-from core.dhan_client import get_dhan_client
+from core.dhan_client import get_dhanhq_lite
 from core.logger import get_logger
 
 logger = get_logger()
+IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass
@@ -41,15 +45,31 @@ def _parse_candle_date(timestamp: str) -> date | None:
     text = str(timestamp).strip()
     if not text:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+    if len(text) >= 10:
         try:
-            return datetime.strptime(text[:19] if len(text) >= 19 else text[:10], fmt).date()
+            return date.fromisoformat(text[:10])
         except ValueError:
-            continue
+            pass
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
     except ValueError:
         return None
+
+
+def _ist_today() -> date:
+    return datetime.now(IST).date()
+
+
+def _format_api_error(response: Any) -> str:
+    if not isinstance(response, dict):
+        return str(response)
+    remarks = response.get("remarks") or {}
+    if isinstance(remarks, dict):
+        code = remarks.get("error_code") or remarks.get("code") or ""
+        message = remarks.get("error_message") or remarks.get("message") or ""
+        if code or message:
+            return f"{code} {message}".strip()
+    return str(response.get("remarks") or response.get("message") or response)
 
 
 class MarketDataService:
@@ -57,6 +77,8 @@ class MarketDataService:
 
     def __init__(self, config_loader: ConfigLoader | None = None) -> None:
         self.config_loader = config_loader or get_config_loader()
+        self._ltp_cache: float | None = None
+        self._ltp_cache_at: float = 0.0
 
     def _resolved_instrument(self) -> dict:
         try:
@@ -66,6 +88,28 @@ class MarketDataService:
                 return resolve_instrument(self.config_loader.get_market_config())
             except Exception:
                 return {}
+
+    def _exchange_segment(self, instrument: dict, exchange: str) -> str:
+        segment = str(instrument.get("exchange_segment") or "").strip()
+        if segment:
+            return segment
+        return "NSE_EQ" if exchange.upper() == "NSE" else "BSE_EQ"
+
+    def _cache_ltp(self, price: float) -> float:
+        import time
+
+        self._ltp_cache = price
+        self._ltp_cache_at = time.monotonic()
+        return price
+
+    def _cached_ltp(self, max_age_seconds: float = 15.0) -> float | None:
+        import time
+
+        if self._ltp_cache is None:
+            return None
+        if time.monotonic() - self._ltp_cache_at > max_age_seconds:
+            return None
+        return self._ltp_cache
 
     def _sync_today_daily_candle(
         self,
@@ -83,7 +127,7 @@ class MarketDataService:
         if ltp is None or ltp <= 0 or not timestamps:
             return closes, highs, lows, timestamps
 
-        today = date.today()
+        today = _ist_today()
         last_day = _parse_candle_date(timestamps[-1])
         today_label = today.isoformat()
 
@@ -105,6 +149,38 @@ class MarketDataService:
             )
         return closes, highs, lows, timestamps
 
+    def _parse_ohlc_payload(
+        self,
+        payload: Any,
+        dhan: Any,
+    ) -> tuple[list[float], list[float], list[float], list[str]] | None:
+        """Convert Dhan OHLC dict/list payload into plain Python lists (no pandas)."""
+        if not isinstance(payload, dict):
+            return None
+
+        closes_raw = payload.get("close")
+        if closes_raw is None:
+            return None
+
+        highs_raw = payload.get("high", closes_raw)
+        lows_raw = payload.get("low", closes_raw)
+        ts_raw = payload.get("timestamp", [])
+
+        closes = [float(x) for x in closes_raw]
+        highs = [float(x) for x in highs_raw]
+        lows = [float(x) for x in lows_raw]
+        timestamps: list[str] = []
+        for ts in ts_raw:
+            try:
+                timestamps.append(str(dhan.convert_to_date_time(ts)))
+            except Exception:
+                timestamps.append(str(ts))
+
+        if len(timestamps) != len(closes):
+            timestamps = [str(i) for i in range(len(closes))]
+
+        return closes, highs, lows, timestamps
+
     def fetch_candles(self) -> CandleData | None:
         """Fetch historical candles for strategy evaluation."""
         trading = self.config_loader.get_trading_config()
@@ -119,63 +195,94 @@ class MarketDataService:
         min_bars_needed = max(slow_ema, rsi_period) + 2
 
         instrument = self._resolved_instrument()
-        security_id = str(instrument.get("security_id") or "").strip() or None
-        instrument_type = str(instrument.get("instrument_name") or "EQUITY")
+        security_id = str(instrument.get("security_id") or "").strip()
+        if not security_id:
+            logger.error(
+                "Failed to fetch candles for %s — security_id missing in config",
+                stock_name,
+            )
+            return None
 
-        dhan = get_dhan_client(self.config_loader)
+        instrument_type = str(instrument.get("instrument_name") or "EQUITY")
+        exchange_segment = self._exchange_segment(instrument, exchange)
 
         try:
-            df = dhan.get_historical_data(
+            dhan = get_dhanhq_lite(self.config_loader)
+            to_date = _ist_today()
+            if timeframe == "DAY":
+                from_date = to_date - timedelta(days=400)
+                response = dhan.historical_daily_data(
+                    security_id,
+                    exchange_segment,
+                    instrument_type,
+                    from_date.isoformat(),
+                    to_date.isoformat(),
+                    0,
+                )
+            else:
+                interval = int(timeframe)
+                from_date = to_date - timedelta(days=5)
+                response = dhan.intraday_minute_data(
+                    security_id,
+                    exchange_segment,
+                    instrument_type,
+                    from_date.isoformat(),
+                    to_date.isoformat(),
+                    interval,
+                )
+        except MemoryError:
+            logger.error(
+                "Failed to fetch candles for %s — MemoryError on low-RAM host; "
+                "free RAM or reduce lookback",
                 stock_name,
-                exchange,
-                timeframe,
-                security_id=security_id,
-                instrument_type=instrument_type,
             )
+            gc.collect()
+            return None
         except Exception as exc:
             logger.error("Failed to fetch candles for %s: %s", stock_name, exc)
             return None
 
-        # Dhan_SRP swallows API errors and returns None — surface that clearly.
-        if df is None:
+        if not isinstance(response, dict) or response.get("status") == "failure":
             logger.error(
-                "Failed to fetch candles for %s — Dhan API returned no data "
-                "(check access token and Data API subscription)",
+                "Failed to fetch candles for %s — Dhan API error: %s",
                 stock_name,
+                _format_api_error(response),
             )
             return None
 
-        if getattr(df, "empty", True):
+        parsed = self._parse_ohlc_payload(response.get("data") or {}, dhan)
+        if parsed is None:
             logger.warning("Empty candle data for %s", stock_name)
             return None
 
-        if len(df) < min_bars_needed:
+        closes, highs, lows, timestamps = parsed
+        if len(closes) < min_bars_needed:
             logger.warning(
                 "Insufficient candles for %s: got %s, need at least %s",
                 stock_name,
-                len(df),
+                len(closes),
                 min_bars_needed,
             )
             return None
 
-        # Long lookback so EMA/RSI converge toward chart platforms (TradingView).
-        # Daily needs more history; intraday keeps a lighter window.
+        # Keep lookback modest for 1GB hosts while still converging EMA/RSI.
         if timeframe == "DAY":
-            tail_bars = max(slow_ema * 20, rsi_period * 20, 250)
+            tail_bars = max(slow_ema * 15, rsi_period * 15, 200)
         else:
-            tail_bars = max(slow_ema * 15, rsi_period * 15, 150)
-        tail = df.tail(tail_bars)
+            tail_bars = max(slow_ema * 10, rsi_period * 10, 120)
 
-        closes = [float(x) for x in tail["close"].tolist()]
-        highs = [float(x) for x in tail.get("high", tail["close"]).tolist()]
-        lows = [float(x) for x in tail.get("low", tail["close"]).tolist()]
-        timestamps = [str(x) for x in tail["timestamp"].tolist()]
+        if len(closes) > tail_bars:
+            closes = closes[-tail_bars:]
+            highs = highs[-tail_bars:]
+            lows = lows[-tail_bars:]
+            timestamps = timestamps[-tail_bars:]
 
         if timeframe == "DAY":
             closes, highs, lows, timestamps = self._sync_today_daily_candle(
                 closes, highs, lows, timestamps
             )
 
+        gc.collect()
         return CandleData(
             closes=closes,
             highs=highs,
@@ -185,20 +292,27 @@ class MarketDataService:
 
     def fetch_ltp(self) -> float | None:
         """Fetch last traded price for the configured instrument."""
+        cached = self._cached_ltp()
+        if cached is not None:
+            return cached
+
         trading = self.config_loader.get_trading_config()
         instrument = self._resolved_instrument()
         symbol = instrument.get("trading_symbol") or str(trading.get("stock_name", ""))
         security_id = str(instrument.get("security_id") or "").strip()
         exchange_segment = str(instrument.get("exchange_segment") or "NSE_EQ")
 
+        if not security_id:
+            logger.error("LTP fetch failed for %s — security_id missing", symbol)
+            return None
+
         try:
-            dhan = get_dhan_client(self.config_loader)
-            # Prefer security_id path so we never need the full instrument CSV for LTP.
-            if security_id:
-                payload = {exchange_segment: [int(security_id)]}
-                data = dhan.Dhan.ticker_data(payload)
-                if isinstance(data, dict) and data.get("status") != "failure":
-                    nested = (data.get("data") or {}).get("data") or {}
+            dhan = get_dhanhq_lite(self.config_loader)
+            payload = {exchange_segment: [int(security_id)]}
+            data = dhan.ticker_data(payload)
+            if isinstance(data, dict) and data.get("status") != "failure":
+                nested = (data.get("data") or {}).get("data") or {}
+                if isinstance(nested, dict):
                     for segment_data in nested.values():
                         if not isinstance(segment_data, dict):
                             continue
@@ -206,13 +320,15 @@ class MarketDataService:
                             if isinstance(values, dict) and "last_price" in values:
                                 price = values["last_price"]
                                 if isinstance(price, (int, float)) and price > 0:
-                                    return float(price)
-
-            ltp_data = dhan.get_ltp_data(symbol)
-            if isinstance(ltp_data, dict):
-                for value in ltp_data.values():
-                    if isinstance(value, (int, float)) and value > 0:
-                        return float(value)
+                                    return self._cache_ltp(float(price))
+            logger.error(
+                "LTP fetch failed for %s — Dhan API error: %s",
+                symbol,
+                _format_api_error(data),
+            )
+        except MemoryError:
+            logger.error("LTP fetch failed for %s — MemoryError", symbol)
+            gc.collect()
         except Exception as exc:
             logger.error("LTP fetch failed for %s: %s", symbol, exc)
         return None

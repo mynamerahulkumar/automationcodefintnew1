@@ -1,10 +1,10 @@
-"""Lazy singleton wrapper around Dhan_SRP.Dhansrp."""
+"""Lazy Dhan clients — lightweight dhanhq for data, Dhan_SRP for orders."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.config_loader import ConfigLoader, get_config_loader, get_security_master_path
 from core.logger import get_logger
@@ -20,6 +20,8 @@ logger = get_logger()
 
 _dhan_client: Dhansrp | None = None
 _dhan_credentials_key: tuple[str, str, bool] | None = None
+_dhanhq_lite: Any | None = None
+_dhanhq_lite_key: tuple[str, str] | None = None
 
 
 def _should_skip_instrument_master(loader: ConfigLoader) -> bool:
@@ -32,6 +34,30 @@ def _should_skip_instrument_master(loader: ConfigLoader) -> bool:
         pass
     market = loader.get_market_config()
     return bool(str(market.get("security_id") or "").strip())
+
+
+def get_dhanhq_lite(config_loader: ConfigLoader | None = None) -> Any:
+    """
+    Return a lightweight dhanhq SDK client (no Dhan_SRP / CSV / mibian).
+
+    Use this for candle + LTP polling on low-RAM hosts (e.g. 1GB AWS).
+    """
+    global _dhanhq_lite, _dhanhq_lite_key
+
+    loader = config_loader or get_config_loader()
+    client_id, access_token = loader.get_broker_credentials()
+    cred_key = (client_id, access_token)
+
+    if _dhanhq_lite is not None and _dhanhq_lite_key == cred_key:
+        return _dhanhq_lite
+
+    from dhanhq import DhanContext, dhanhq
+
+    logger.info("Initializing lightweight dhanhq client (market data only)")
+    context = DhanContext(client_id, access_token)
+    _dhanhq_lite = dhanhq(context)
+    _dhanhq_lite_key = cred_key
+    return _dhanhq_lite
 
 
 def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
@@ -65,7 +91,9 @@ def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
 
 
 def reset_dhan_client() -> None:
-    """Reset the cached Dhan client after credential reload."""
-    global _dhan_client, _dhan_credentials_key
+    """Reset cached Dhan clients after credential reload."""
+    global _dhan_client, _dhan_credentials_key, _dhanhq_lite, _dhanhq_lite_key
     _dhan_client = None
     _dhan_credentials_key = None
+    _dhanhq_lite = None
+    _dhanhq_lite_key = None

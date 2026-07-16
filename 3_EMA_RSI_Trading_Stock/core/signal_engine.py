@@ -274,8 +274,18 @@ class PollingScheduler:
             while not self._stop_event.is_set():
                 try:
                     callback()
-                except Exception:
-                    logger.exception("Unhandled error in poll cycle")
+                except MemoryError as exc:
+                    logger.error(
+                        "Unhandled error in poll cycle: MemoryError: %s "
+                        "(1GB hosts: keep security_id in config; avoid loading CSV)",
+                        exc,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Unhandled error in poll cycle: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
                 self._stop_event.wait(self.interval_seconds)
             logger.info("Polling stopped")
 
@@ -386,6 +396,17 @@ class SignalEngine:
 
     def poll_cycle(self) -> None:
         """Single polling iteration."""
+        try:
+            self._poll_cycle_inner()
+        except MemoryError as exc:
+            self.state.set_error("MemoryError on low-RAM host")
+            raise
+        except Exception as exc:
+            self.state.set_error(f"{type(exc).__name__}: {exc}")
+            raise
+
+    def _poll_cycle_inner(self) -> None:
+        """Single polling iteration implementation."""
         candles = self.market_data.fetch_candles()
         if candles is None:
             self.state.set_error("Failed to fetch candle data")

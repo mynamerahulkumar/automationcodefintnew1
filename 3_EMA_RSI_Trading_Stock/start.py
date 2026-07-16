@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -23,6 +24,9 @@ HEALTH_URL = f"http://127.0.0.1:{PORT}/health"
 SERVER_READY_TIMEOUT = 30
 POLL_LOG_MARKER = "POLL SUMMARY |"
 LOG_TAIL_INTERVAL = 0.3
+LOG_MESSAGE_PATTERN = re.compile(
+    r"^(ERROR|WARNING):\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+:(.*)$"
+)
 
 colorama_init(autoreset=True)
 
@@ -159,10 +163,35 @@ def _print_startup_poll_block(poll_number: int, parsed: dict[str, str]) -> None:
 
 def _extract_poll_error(line: str) -> str | None:
     """Return a short poll-cycle error message for CLI feedback."""
-    lowered = line.lower()
-    is_error = "ERROR:" in line or "WARNING:" in line
-    if not is_error:
-        return None
+    stripped = line.strip()
+    lowered = stripped.lower()
+
+    match = LOG_MESSAGE_PATTERN.match(stripped)
+    if match:
+        level, message = match.group(1), match.group(2).strip()
+        is_error = level == "ERROR"
+        is_warning = level == "WARNING"
+    else:
+        message = stripped
+        is_error = stripped.startswith("ERROR:")
+        is_warning = stripped.startswith("WARNING:")
+        if not (is_error or is_warning):
+            if any(
+                key in stripped
+                for key in (
+                    "MemoryError",
+                    "ModuleNotFoundError",
+                    "ImportError",
+                    "ConfigError",
+                )
+            ):
+                return stripped
+            return None
+        # Fallback: strip LEVEL:timestamp: if present
+        if ":" in message:
+            message = message.split(":", 2)[-1].strip()
+
+    lowered_msg = message.lower()
 
     if "dh-901" in lowered or "invalid_authentication" in lowered:
         return (
@@ -173,21 +202,33 @@ def _extract_poll_error(line: str) -> str | None:
             "Dhan Data API not subscribed (DH-902) — enable Data APIs on "
             "web.dhan.co to fetch LTP/EMA/RSI"
         )
-    if "empty candle data" in lowered:
-        return "No candle data — check Dhan token / Data API subscription"
-    if "failed to fetch candles" in lowered:
-        return line.split("ERROR:", 1)[-1].strip() if "ERROR:" in line else (
-            "Failed to fetch candles — check Dhan credentials / Data API"
+    if "memoryerror" in lowered_msg:
+        return (
+            "Out of memory — keep security_id in config.yaml; "
+            "do not load api-scrip-master.csv on 1GB VMs"
         )
-    if "exception in getting ohlc" in lowered:
+    if "modulenotfounderror" in lowered_msg or "no module named" in lowered_msg:
+        missing = message.rsplit(":", 1)[-1].strip().strip("'\"")
+        return f"Missing dependency — {missing}"
+    if "empty candle data" in lowered_msg:
+        return "No candle data — check Dhan token / Data API subscription"
+    if "failed to fetch candles" in lowered_msg:
+        return message
+    if "ltp fetch failed" in lowered_msg:
+        return message
+    if "exception in getting ohlc" in lowered_msg:
         return "OHLC fetch failed — check logs/trading.log for Dhan API error"
-    if "poll cycle" in lowered:
-        if "modulenotfounderror" in lowered:
-            module = line.rsplit("ModuleNotFoundError:", 1)[-1].strip()
-            return f"Missing dependency — {module}"
-        if "configerror" in lowered:
-            return line.rsplit("ConfigError:", 1)[-1].strip()
+    if "unhandled error in poll cycle" in lowered_msg:
+        detail = message.split("Unhandled error in poll cycle", 1)[-1].lstrip(": ").strip()
+        if detail:
+            return f"Poll cycle failed — {detail}"
         return "Poll cycle failed — check logs/trading.log for details."
+    if is_error:
+        return message
+    if is_warning and (
+        "insufficient candles" in lowered_msg or "empty candle" in lowered_msg
+    ):
+        return message
     return None
 
 
@@ -206,6 +247,7 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:
     deadline = time.time() + timeout_seconds
     polls_seen = 0
     last_error: str | None = None
+    traceback_buffer: list[str] = []
 
     print()
     print(f"Live poll updates (showing {poll_count} poll(s))...")
@@ -218,6 +260,7 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:
             if line:
                 if POLL_LOG_MARKER in line:
                     polls_seen += 1
+                    traceback_buffer.clear()
                     parsed = _parse_poll_summary(line)
                     if parsed:
                         _print_startup_poll_block(polls_seen, parsed)
@@ -227,12 +270,25 @@ def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:
                     error_text = _extract_poll_error(line)
                     if error_text and error_text != last_error:
                         last_error = error_text
-                        print(f"  Waiting... {error_text}")
+                        print(f"  ERROR: {error_text}")
+                    elif line.startswith("Traceback") or (
+                        traceback_buffer and line.startswith(" ")
+                    ):
+                        traceback_buffer.append(line.rstrip())
+                        if line.startswith(" ") is False and "Error" in line:
+                            detail = line.strip()
+                            if detail and detail != last_error:
+                                last_error = detail
+                                print(f"  ERROR: {detail}")
+                            traceback_buffer.clear()
             else:
                 time.sleep(LOG_TAIL_INTERVAL)
 
     print("=" * 55)
-    if polls_seen < poll_count:
+    if polls_seen == 0 and last_error:
+        print(f"Startup polls failed: {last_error}")
+        print("See full details in logs/trading.log and logs/uvicorn.out")
+    elif polls_seen < poll_count:
         print(
             f"Note: Only {polls_seen}/{poll_count} poll(s) logged within "
             f"{int(timeout_seconds)}s — bot is still running."

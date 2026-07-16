@@ -5,7 +5,6 @@ except ImportError:
 	DhanContext = None
 	MarketFeed = None
 	OrderUpdate = None
-import mibian
 import datetime
 import numpy as np
 import pandas as pd
@@ -26,6 +25,17 @@ import urllib.parse
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 print("Codebase Version 2.8 : Solved - Strike Selection Issue")
+
+# Lazy-load mibian (pulls scipy) only when option pricing helpers are used.
+mibian = None
+
+
+def _get_mibian():
+	global mibian
+	if mibian is None:
+		import mibian as _mibian
+		mibian = _mibian
+	return mibian
 
 NIFTY50_SECURITY_IDS = {
 	"ADANIENT": 25,
@@ -1803,8 +1813,9 @@ class Dhansrp:
 			# ltp = self.get_ltp(script)
 
 			if scrip_type == 'CE':
-				civ = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], callPrice= ltp)
-				cval = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = civ.impliedVolatility ,callPrice= ltp)
+				_m = _get_mibian()
+				civ = _m.BS([asset_price, strike, interest_rate, days_to_expiry], callPrice= ltp)
+				cval = _m.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = civ.impliedVolatility ,callPrice= ltp)
 				if flag == "price":
 					return cval.callPrice
 				if flag == "delta":
@@ -1823,8 +1834,9 @@ class Dhansrp:
 					return {'callPrice' : cval.callPrice, 'callDelta' : cval.callDelta, 'callDelta2' : cval.callDelta2, 'callTheta' : cval.callTheta, 'callRho' : cval.callRho, 'vega' : cval.vega, 'gamma' : cval.gamma}
 
 			if scrip_type == "PE":
-				piv = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], putPrice= ltp)
-				pval = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = piv.impliedVolatility ,putPrice= ltp)
+				_m = _get_mibian()
+				piv = _m.BS([asset_price, strike, interest_rate, days_to_expiry], putPrice= ltp)
+				pval = _m.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = piv.impliedVolatility ,putPrice= ltp)
 				if flag == "price":
 					return pval.putPrice
 				if flag == "delta":
