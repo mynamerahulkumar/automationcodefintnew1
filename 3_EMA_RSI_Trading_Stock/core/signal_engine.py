@@ -389,6 +389,10 @@ class SignalEngine:
         candles = self.market_data.fetch_candles()
         if candles is None:
             self.state.set_error("Failed to fetch candle data")
+            logger.error(
+                "Poll cycle skipped — failed to fetch candles "
+                "(no LTP/EMA/RSI until Dhan data is available)"
+            )
             return
 
         mode = self.config_loader.get_strategy_mode()

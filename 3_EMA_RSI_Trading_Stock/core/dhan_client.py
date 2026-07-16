@@ -19,7 +19,19 @@ if str(PROJECT_ROOT) not in sys.path:
 logger = get_logger()
 
 _dhan_client: Dhansrp | None = None
-_dhan_credentials_key: tuple[str, str] | None = None
+_dhan_credentials_key: tuple[str, str, bool] | None = None
+
+
+def _should_skip_instrument_master(loader: ConfigLoader) -> bool:
+    """Skip loading the full CSV into pandas when security_id is already known."""
+    try:
+        instrument = loader.get_resolved_instrument()
+        if str(instrument.get("security_id") or "").strip():
+            return True
+    except Exception:
+        pass
+    market = loader.get_market_config()
+    return bool(str(market.get("security_id") or "").strip())
 
 
 def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
@@ -28,20 +40,25 @@ def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
 
     loader = config_loader or get_config_loader()
     client_id, access_token = loader.get_broker_credentials()
-    cred_key = (client_id, access_token)
+    skip_master = _should_skip_instrument_master(loader)
+    cred_key = (client_id, access_token, skip_master)
 
     if _dhan_client is not None and _dhan_credentials_key == cred_key:
         return _dhan_client
 
     from Dhan_SRP import Dhansrp  # noqa: WPS433
 
-    logger.info("Initializing Dhan client")
+    logger.info(
+        "Initializing Dhan client (skip_instrument_master=%s)",
+        skip_master,
+    )
     _dhan_client = Dhansrp(
         ClientCode=client_id,
         token_id=access_token,
         enable_file_logging=False,
         instrument_cache_path=str(get_security_master_path()),
         persist_instrument_file=False,
+        skip_instrument_master=skip_master,
     )
     _dhan_credentials_key = cred_key
     return _dhan_client

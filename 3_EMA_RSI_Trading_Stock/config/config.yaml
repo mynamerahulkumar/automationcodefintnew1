@@ -4,14 +4,14 @@ market:
   exchange: NSE
   instrument: STOCK
   trading_symbol: HDFCBANK
-  security_id: ""
+  security_id: "1333"
   expiry: ""
   strike: ""
   option_type: ""
 
 strategy:
   mode: EMA_RSI
-  timeframe: 5m
+  timeframe: 1d
 
 polling:
   seconds: 30

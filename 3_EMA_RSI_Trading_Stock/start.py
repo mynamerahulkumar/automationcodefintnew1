@@ -38,9 +38,7 @@ def _strategy_label(mode: str) -> str:
 
 def print_startup_banner(loader) -> None:
     """Resolve security_id and print startup summary."""
-    from core.config_loader import ConfigError, build_equity_index
-
-    build_equity_index()
+    from core.config_loader import ConfigError
 
     market = loader.get_market_config()
     strategy = loader.get_strategy_config()
@@ -161,19 +159,36 @@ def _print_startup_poll_block(poll_number: int, parsed: dict[str, str]) -> None:
 
 def _extract_poll_error(line: str) -> str | None:
     """Return a short poll-cycle error message for CLI feedback."""
-    if "ERROR:" not in line:
-        return None
     lowered = line.lower()
-    if "poll cycle" not in lowered and "fetch candles" not in lowered:
+    is_error = "ERROR:" in line or "WARNING:" in line
+    if not is_error:
         return None
-    if "modulenotfounderror" in lowered:
-        module = line.rsplit("ModuleNotFoundError:", 1)[-1].strip()
-        return f"Missing dependency — {module}"
-    if "configerror" in lowered:
-        return line.rsplit("ConfigError:", 1)[-1].strip()
+
+    if "dh-901" in lowered or "invalid_authentication" in lowered:
+        return (
+            "Dhan auth failed (DH-901) — refresh DHAN_ACCESS_TOKEN in .env"
+        )
+    if "dh-902" in lowered or "not subscribed to data apis" in lowered:
+        return (
+            "Dhan Data API not subscribed (DH-902) — enable Data APIs on "
+            "web.dhan.co to fetch LTP/EMA/RSI"
+        )
+    if "empty candle data" in lowered:
+        return "No candle data — check Dhan token / Data API subscription"
     if "failed to fetch candles" in lowered:
-        return line.rsplit("ERROR:", 1)[-1].strip()
-    return "Poll cycle failed — check logs/trading.log for details."
+        return line.split("ERROR:", 1)[-1].strip() if "ERROR:" in line else (
+            "Failed to fetch candles — check Dhan credentials / Data API"
+        )
+    if "exception in getting ohlc" in lowered:
+        return "OHLC fetch failed — check logs/trading.log for Dhan API error"
+    if "poll cycle" in lowered:
+        if "modulenotfounderror" in lowered:
+            module = line.rsplit("ModuleNotFoundError:", 1)[-1].strip()
+            return f"Missing dependency — {module}"
+        if "configerror" in lowered:
+            return line.rsplit("ConfigError:", 1)[-1].strip()
+        return "Poll cycle failed — check logs/trading.log for details."
+    return None
 
 
 def stream_startup_poll_logs(poll_count: int, timeout_seconds: float) -> None:

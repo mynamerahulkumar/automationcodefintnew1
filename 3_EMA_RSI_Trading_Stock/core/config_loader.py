@@ -63,7 +63,11 @@ def exchange_segment(exchange: str, segment: str) -> str:
 
 
 def build_equity_index() -> dict[tuple[str, str], dict[str, Any]]:
-    """Stream CSV once and build a compact equity symbol index."""
+    """
+    Build a full equity symbol index (memory-heavy).
+
+    Prefer `_lookup_equity_from_csv` for single-symbol resolve on low-RAM hosts.
+    """
     global _EQUITY_INDEX
     if _EQUITY_INDEX is not None:
         return _EQUITY_INDEX
@@ -97,52 +101,98 @@ def build_equity_index() -> dict[tuple[str, str], dict[str, Any]]:
     return index
 
 
+def source_label(source: str) -> str:
+    """Human-readable label for where security_id was resolved from."""
+    if source == "config":
+        return "config.yaml"
+    if source == "config_fallback_csv":
+        return f"config.yaml (fallback {SECURITY_MASTER_PATH.name})"
+    return SECURITY_MASTER_PATH.name
+
+
+def _lookup_equity_from_csv(stock_name: str, exchange: str) -> dict[str, Any]:
+    """
+    Stream api-scrip-master.csv until the first matching equity row.
+
+    Avoids loading the full ~20k-symbol index into memory (important on 1GB hosts).
+    """
+    if not SECURITY_MASTER_PATH.exists():
+        raise FileNotFoundError(f"Security master not found: {SECURITY_MASTER_PATH}")
+
+    exchange_upper = exchange.upper()
+    symbol_upper = stock_name.upper().strip()
+    logger.info(
+        "Streaming CSV lookup for %s on %s (low-memory mode)",
+        symbol_upper,
+        exchange_upper,
+    )
+
+    with open(SECURITY_MASTER_PATH, encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("SEM_INSTRUMENT_NAME") != "EQUITY":
+                continue
+            if str(row.get("SEM_EXM_EXCH_ID", "")).upper() != exchange_upper:
+                continue
+            if str(row.get("SEM_TRADING_SYMBOL", "")).upper() != symbol_upper:
+                continue
+            return {
+                "security_id": str(row["SEM_SMST_SECURITY_ID"]),
+                "trading_symbol": str(row["SEM_TRADING_SYMBOL"]),
+                "exchange_segment": exchange_segment(exchange_upper, "EQUITY"),
+                "instrument_name": "EQUITY",
+            }
+
+    raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
+
+
 def resolve_equity_security(
     stock_name: str,
     exchange: str = "NSE",
     security_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve an equity security from symbol or explicit security_id."""
-    seg = exchange_segment(exchange, "EQUITY")
+    """
+    Resolve an equity security.
 
-    if security_id:
+    Prefer non-blank config security_id and skip CSV entirely (low RAM).
+    If config ID is missing, stream CSV for a single-symbol match.
+    """
+    seg = exchange_segment(exchange, "EQUITY")
+    config_id = str(security_id).strip() if security_id else ""
+
+    if config_id:
+        logger.info(
+            "Resolved equity %s -> security_id %s from config.yaml (CSV not loaded)",
+            stock_name,
+            config_id,
+        )
         return {
-            "security_id": str(security_id),
+            "security_id": config_id,
             "trading_symbol": stock_name.upper(),
             "exchange_segment": seg,
             "instrument_name": "EQUITY",
+            "source": "config",
         }
 
-    index = build_equity_index()
-    key = (exchange.upper(), stock_name.upper().strip())
-    resolved = index.get(key)
-    if resolved is None:
-        raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
+    resolved = _lookup_equity_from_csv(stock_name, exchange)
+    resolved["source"] = "csv"
+    logger.info(
+        "Resolved equity %s -> security_id %s from %s",
+        stock_name,
+        resolved["security_id"],
+        SECURITY_MASTER_PATH.name,
+    )
+    return resolved
 
-    logger.info("Resolved equity %s -> security_id %s", stock_name, resolved["security_id"])
-    return resolved.copy()
 
-
-def resolve_option_security(
+def _lookup_option_from_csv(
     underlying: str,
     expiry: str,
     strike: float,
     option_type: str,
-    exchange: str = "NSE",
-    security_id: str | None = None,
+    exchange: str,
 ) -> dict[str, Any]:
-    """Resolve an option contract by streaming the CSV (cached after first match)."""
+    """Look up option contract from api-scrip-master.csv (cached after first match)."""
     seg = exchange_segment(exchange, "OPTION")
-
-    if security_id:
-        return {
-            "security_id": str(security_id),
-            "trading_symbol": f"{underlying} {int(strike)} {option_type}",
-            "exchange_segment": seg,
-            "instrument_name": "OPTIDX",
-            "lot_size": None,
-        }
-
     cache_key = (
         exchange.upper(),
         underlying.upper(),
@@ -197,13 +247,6 @@ def resolve_option_security(
                 "lot_size": int(float(lot_units)) if lot_units else None,
             }
             _OPTION_CACHE[cache_key] = resolved.copy()
-            logger.info(
-                "Resolved option %s %s %s -> security_id %s",
-                underlying,
-                strike,
-                option_type,
-                resolved["security_id"],
-            )
             return resolved
 
     raise ValueError(
@@ -211,12 +254,61 @@ def resolve_option_security(
     )
 
 
+def resolve_option_security(
+    underlying: str,
+    expiry: str,
+    strike: float,
+    option_type: str,
+    exchange: str = "NSE",
+    security_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Resolve an option contract.
+
+    Prefer non-blank config security_id and skip CSV entirely (low RAM).
+    If config ID is missing, stream CSV for a single-contract match.
+    """
+    seg = exchange_segment(exchange, "OPTION")
+    config_id = str(security_id).strip() if security_id else ""
+    display_symbol = f"{underlying} {int(strike)} {option_type}"
+
+    if config_id:
+        logger.info(
+            "Resolved option %s -> security_id %s from config.yaml (CSV not loaded)",
+            display_symbol,
+            config_id,
+        )
+        return {
+            "security_id": config_id,
+            "trading_symbol": display_symbol,
+            "exchange_segment": seg,
+            "instrument_name": "OPTIDX",
+            "lot_size": None,
+            "source": "config",
+        }
+
+    resolved = _lookup_option_from_csv(
+        underlying, expiry, strike, option_type, exchange
+    )
+    resolved["source"] = "csv"
+    logger.info(
+        "Resolved option %s %s %s -> security_id %s from %s",
+        underlying,
+        strike,
+        option_type,
+        resolved["security_id"],
+        SECURITY_MASTER_PATH.name,
+    )
+    return resolved
+
+
 def resolve_instrument(market_config: dict[str, Any]) -> dict[str, Any]:
     """Resolve instrument details from market configuration."""
     instrument = str(market_config.get("instrument", "STOCK")).upper()
     exchange = str(market_config.get("exchange", "NSE")).upper()
     trading_symbol = str(market_config.get("trading_symbol", "")).strip()
-    security_id = market_config.get("security_id") or None
+    raw_security_id = market_config.get("security_id")
+    security_id = str(raw_security_id).strip() if raw_security_id not in (None, "") else None
     if security_id == "":
         security_id = None
 
@@ -224,7 +316,7 @@ def resolve_instrument(market_config: dict[str, Any]) -> dict[str, Any]:
         return resolve_equity_security(
             stock_name=trading_symbol,
             exchange=exchange,
-            security_id=str(security_id) if security_id else None,
+            security_id=security_id,
         )
 
     return resolve_option_security(
@@ -233,7 +325,7 @@ def resolve_instrument(market_config: dict[str, Any]) -> dict[str, Any]:
         strike=float(market_config["strike"]),
         option_type=str(market_config["option_type"]),
         exchange=exchange,
-        security_id=str(security_id) if security_id else None,
+        security_id=security_id,
     )
 
 
@@ -346,7 +438,7 @@ class ConfigLoader:
         return int(polling.get("startup_poll_logs", 3))
 
     def parse_timeframe_minutes(self) -> int:
-        """Convert strategy.timeframe (e.g. 5m) to minutes for Dhan API."""
+        """Convert strategy.timeframe (e.g. 5m, 1d) to minutes."""
         raw = str(self.get_strategy_config().get("timeframe", "5m")).strip()
         match = TIMEFRAME_PATTERN.match(raw)
         if not match:
@@ -360,8 +452,30 @@ class ConfigLoader:
         if unit in {"h", "hour"}:
             return value * 60
         if unit in {"d", "day"}:
-            raise ConfigError("DAY timeframe not supported for intraday polling")
+            return value * 1440
         raise ConfigError(f"Invalid strategy.timeframe unit: {raw}")
+
+    def get_dhan_timeframe(self) -> str:
+        """
+        Return Dhan historical interval string.
+
+        Intraday: '1', '5', '15', '25', '60'
+        Daily: 'DAY'
+        """
+        minutes = self.parse_timeframe_minutes()
+        if minutes >= 1440:
+            return "DAY"
+        supported = {1, 5, 15, 25, 60}
+        if minutes not in supported:
+            raise ConfigError(
+                f"Unsupported timeframe minutes={minutes}; "
+                f"use one of {sorted(supported)}m or 1d"
+            )
+        return str(minutes)
+
+    def is_daily_timeframe(self) -> bool:
+        """True when strategy.timeframe is daily (e.g. 1d)."""
+        return self.get_dhan_timeframe() == "DAY"
 
     def get_trading_config(self) -> dict[str, Any]:
         """Return normalized trading config for order/market modules."""
@@ -390,7 +504,7 @@ class ConfigLoader:
         }
 
     def get_resolved_instrument(self) -> dict[str, Any]:
-        """Resolve and cache security_id from CSV."""
+        """Resolve and cache security_id (config preferred, CSV fallback)."""
         if self._resolved_instrument is None:
             self._resolved_instrument = resolve_instrument(self.get_market_config())
         return self._resolved_instrument
@@ -495,7 +609,7 @@ class ConfigLoader:
 
         loader = ConfigLoader.__new__(ConfigLoader)
         loader._config = raw
-        loader.parse_timeframe_minutes()
+        loader.get_dhan_timeframe()
 
 
 _config_loader: ConfigLoader | None = None

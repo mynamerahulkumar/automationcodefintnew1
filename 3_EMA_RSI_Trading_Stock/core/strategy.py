@@ -54,20 +54,22 @@ class SignalResult:
 
 def compute_ema_series(closes: list[float], period: int) -> list[float]:
     """
-    Compute EMA series using incremental formula (no pandas in hot path).
+    Compute EMA series using TradingView-style SMA seed.
 
-    Fast EMA — smaller period (e.g. 5, 8, 9, 10, 13). Responds faster to price.
-    Slow EMA — larger period (e.g. 20, 21, 34, 50, 100, 200). Responds slower.
+    First ``period`` closes form an SMA seed; subsequent values use the
+    standard EMA formula. Early bars before the seed are left as NaN so
+    the series stays aligned with ``closes``.
     """
-    if not closes or period <= 0:
+    if not closes or period <= 0 or len(closes) < period:
         return []
 
     k = 2.0 / (period + 1)
-    ema_values: list[float] = []
-    ema = float(closes[0])
+    ema_values: list[float] = [float("nan")] * (period - 1)
+
+    ema = sum(closes[:period]) / float(period)
     ema_values.append(ema)
 
-    for price in closes[1:]:
+    for price in closes[period:]:
         ema = float(price) * k + ema * (1.0 - k)
         ema_values.append(ema)
 
@@ -207,6 +209,11 @@ def generate_signal(
             return _empty_result(candles)
         ema_fast_prev, ema_fast_curr = fast_series[-2], fast_series[-1]
         ema_slow_prev, ema_slow_curr = slow_series[-2], slow_series[-1]
+        if any(
+            v is None or (isinstance(v, float) and np.isnan(v))
+            for v in (ema_fast_prev, ema_fast_curr, ema_slow_prev, ema_slow_curr)
+        ):
+            return _empty_result(candles)
 
     if mode_upper in {StrategyMode.RSI.value, StrategyMode.EMA_RSI.value}:
         rsi_series = compute_rsi_series(closes, rsi_period)
