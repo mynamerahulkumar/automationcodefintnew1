@@ -1,12 +1,10 @@
-broker:
-  client_id: "1103695755"
-  access_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzgzODcxNjgyLCJpYXQiOjE3ODM3ODUyODIsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTAzNjk1NzU1In0.nuFbsdJ1ISCjMjJO3QSYYHZo5Ae4-WPjkkNWz5UZn28RYKoqZ_9oYF8iIAdJLjgrxMTqTEMEz3pPUVBMm4_6Ow"
+# Credentials live in .env (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN) — not here.
 
 market:
   exchange: NSE
   instrument: STOCK
   trading_symbol: HDFCBANK
-  security_id: ""
+  security_id: "1333"
   expiry: ""
   strike: ""
   option_type: ""
@@ -17,6 +15,7 @@ strategy:
 
 polling:
   seconds: 30
+  startup_poll_logs: 3
 
 cli:
   max_visible_polls: 3
@@ -32,7 +31,7 @@ rsi:
   sell: 40
 
 trade:
-  quantity: 10
+  quantity: 1
   order_type: LIMIT
   product_type: CNC
   limit_buffer: 0.10

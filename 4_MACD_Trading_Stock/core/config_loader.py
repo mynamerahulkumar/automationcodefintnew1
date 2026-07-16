@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from core.logger import get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 SECURITY_MASTER_PATH = PROJECT_ROOT / "security_id" / "api-scrip-master.csv"
 
 logger = get_logger()
@@ -23,6 +25,21 @@ VALID_MODES = {"MACD_RSI", "MACD", "RSI"}
 
 _EQUITY_INDEX: dict[tuple[str, str], dict[str, Any]] | None = None
 _OPTION_CACHE: dict[tuple[str, str, str, float, str], dict[str, Any]] = {}
+_ENV_LOADED = False
+
+
+def load_env_file(env_path: Path | str | None = None) -> Path | None:
+    """Load credentials and other vars from .env into os.environ (once)."""
+    global _ENV_LOADED
+    path = Path(env_path) if env_path else DEFAULT_ENV_PATH
+    if path.exists():
+        load_dotenv(path, override=False)
+        _ENV_LOADED = True
+        return path
+    if not _ENV_LOADED:
+        load_dotenv(override=False)
+        _ENV_LOADED = True
+    return path if path.exists() else None
 
 
 class ConfigError(Exception):
@@ -46,7 +63,11 @@ def exchange_segment(exchange: str, segment: str) -> str:
 
 
 def build_equity_index() -> dict[tuple[str, str], dict[str, Any]]:
-    """Stream CSV once and build a compact equity symbol index."""
+    """
+    Build a full equity symbol index (memory-heavy).
+
+    Prefer ``_lookup_equity_from_csv`` for single-symbol resolve on low-RAM hosts.
+    """
     global _EQUITY_INDEX
     if _EQUITY_INDEX is not None:
         return _EQUITY_INDEX
@@ -80,30 +101,87 @@ def build_equity_index() -> dict[tuple[str, str], dict[str, Any]]:
     return index
 
 
+def source_label(source: str) -> str:
+    """Human-readable label for where security_id was resolved from."""
+    if source == "config":
+        return "config.yaml"
+    if source == "config_fallback_csv":
+        return f"config.yaml (fallback {SECURITY_MASTER_PATH.name})"
+    return SECURITY_MASTER_PATH.name
+
+
+def _lookup_equity_from_csv(stock_name: str, exchange: str) -> dict[str, Any]:
+    """
+    Stream api-scrip-master.csv until the first matching equity row.
+
+    Avoids loading the full ~20k-symbol index into memory (important on 1GB hosts).
+    """
+    if not SECURITY_MASTER_PATH.exists():
+        raise FileNotFoundError(f"Security master not found: {SECURITY_MASTER_PATH}")
+
+    exchange_upper = exchange.upper()
+    symbol_upper = stock_name.upper().strip()
+    logger.info(
+        "Streaming CSV lookup for %s on %s (low-memory mode)",
+        symbol_upper,
+        exchange_upper,
+    )
+
+    with open(SECURITY_MASTER_PATH, encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("SEM_INSTRUMENT_NAME") != "EQUITY":
+                continue
+            if str(row.get("SEM_EXM_EXCH_ID", "")).upper() != exchange_upper:
+                continue
+            if str(row.get("SEM_TRADING_SYMBOL", "")).upper() != symbol_upper:
+                continue
+            return {
+                "security_id": str(row["SEM_SMST_SECURITY_ID"]),
+                "trading_symbol": str(row["SEM_TRADING_SYMBOL"]),
+                "exchange_segment": exchange_segment(exchange_upper, "EQUITY"),
+                "instrument_name": "EQUITY",
+            }
+
+    raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
+
+
 def resolve_equity_security(
     stock_name: str,
     exchange: str = "NSE",
     security_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve an equity security from symbol or explicit security_id."""
-    seg = exchange_segment(exchange, "EQUITY")
+    """
+    Resolve an equity security.
 
-    if security_id:
+    Prefer non-blank config security_id and skip CSV entirely (low RAM).
+    If config ID is missing, stream CSV for a single-symbol match.
+    """
+    seg = exchange_segment(exchange, "EQUITY")
+    config_id = str(security_id).strip() if security_id else ""
+
+    if config_id:
+        logger.info(
+            "Resolved equity %s -> security_id %s from config.yaml (CSV not loaded)",
+            stock_name,
+            config_id,
+        )
         return {
-            "security_id": str(security_id),
+            "security_id": config_id,
             "trading_symbol": stock_name.upper(),
             "exchange_segment": seg,
             "instrument_name": "EQUITY",
+            "source": "config",
         }
 
-    index = build_equity_index()
-    key = (exchange.upper(), stock_name.upper().strip())
-    resolved = index.get(key)
-    if resolved is None:
-        raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
-
-    logger.info("Resolved equity %s -> security_id %s", stock_name, resolved["security_id"])
-    return resolved.copy()
+    resolved = _lookup_equity_from_csv(stock_name, exchange)
+    resolved["source"] = "csv"
+    logger.info(
+        "Resolved equity %s -> security_id %s from %s",
+        stock_name,
+        resolved["security_id"],
+        SECURITY_MASTER_PATH.name,
+    )
+    return resolved
 
 
 def resolve_option_security(
@@ -116,14 +194,21 @@ def resolve_option_security(
 ) -> dict[str, Any]:
     """Resolve an option contract by streaming the CSV (cached after first match)."""
     seg = exchange_segment(exchange, "OPTION")
+    config_id = str(security_id).strip() if security_id else ""
 
-    if security_id:
+    if config_id:
+        logger.info(
+            "Resolved option %s -> security_id %s from config.yaml (CSV not loaded)",
+            underlying,
+            config_id,
+        )
         return {
-            "security_id": str(security_id),
+            "security_id": config_id,
             "trading_symbol": f"{underlying} {int(strike)} {option_type}",
             "exchange_segment": seg,
             "instrument_name": "OPTIDX",
             "lot_size": None,
+            "source": "config",
         }
 
     cache_key = (
@@ -249,22 +334,30 @@ class ConfigLoader:
         self._config = raw
         self._resolved_instrument = None
         logger.info("Configuration loaded from %s", self.config_path)
+        env_path = load_env_file()
+        if env_path and env_path.exists():
+            logger.info("Credentials loaded from %s", env_path)
         return self._config
 
     def reload(self) -> dict[str, Any]:
-        """Reload configuration from disk."""
+        """Reload .env and configuration from disk."""
+        global _ENV_LOADED
+        _ENV_LOADED = False
+        load_dotenv(DEFAULT_ENV_PATH, override=True)
+        _ENV_LOADED = True
+        logger.info("Reloading configuration from %s", self.config_path)
         return self.load()
 
     def get_broker_credentials(self) -> tuple[str, str]:
-        """Return Dhan credentials with environment overrides."""
-        broker = self.config.get("broker", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or broker.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or broker.get("access_token", "")
+        """Return Dhan client_id and access_token from .env / environment."""
+        load_env_file()
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
 
         if not client_id or not access_token:
             raise ConfigError(
-                "Broker credentials missing. Set broker.client_id and broker.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
+                f"in {DEFAULT_ENV_PATH} (copy from .env.example)."
             )
         return str(client_id), str(access_token)
 
@@ -323,8 +416,13 @@ class ConfigLoader:
         cli = self.config.get("cli", {})
         return int(cli.get("max_visible_polls", 3))
 
+    def get_startup_poll_logs(self) -> int:
+        """Return number of poll summaries to stream on CLI at startup."""
+        polling = self.config.get("polling", {})
+        return int(polling.get("startup_poll_logs", 3))
+
     def parse_timeframe_minutes(self) -> int:
-        """Convert strategy.timeframe (e.g. 5m) to minutes for Dhan API."""
+        """Convert strategy.timeframe (e.g. 5m / 1d) to minutes."""
         raw = str(self.get_strategy_config().get("timeframe", "5m")).strip()
         match = TIMEFRAME_PATTERN.match(raw)
         if not match:
@@ -338,8 +436,30 @@ class ConfigLoader:
         if unit in {"h", "hour"}:
             return value * 60
         if unit in {"d", "day"}:
-            raise ConfigError("DAY timeframe not supported for intraday polling")
+            return value * 1440
         raise ConfigError(f"Invalid strategy.timeframe unit: {raw}")
+
+    def get_dhan_timeframe(self) -> str:
+        """
+        Return Dhan historical interval string.
+
+        Intraday: '1', '5', '15', '25', '60'
+        Daily: 'DAY'
+        """
+        minutes = self.parse_timeframe_minutes()
+        if minutes >= 1440:
+            return "DAY"
+        supported = {1, 5, 15, 25, 60}
+        if minutes not in supported:
+            raise ConfigError(
+                f"Unsupported timeframe minutes={minutes}; "
+                f"use one of {sorted(supported)}m or 1d"
+            )
+        return str(minutes)
+
+    def is_daily_timeframe(self) -> bool:
+        """True when strategy.timeframe is daily (e.g. 1d)."""
+        return self.get_dhan_timeframe() == "DAY"
 
     def get_trading_config(self) -> dict[str, Any]:
         """Return normalized trading config for order/market modules."""
@@ -406,11 +526,14 @@ class ConfigLoader:
             },
             "risk": risk,
             "polling_seconds": self.get_polling_seconds(),
+            "startup_poll_logs": self.get_startup_poll_logs(),
             "max_visible_polls": self.get_max_visible_polls(),
         }
 
     def _validate(self, raw: dict[str, Any]) -> None:
         """Validate required configuration fields."""
+        load_env_file()
+
         market = raw.get("market")
         if not market or not isinstance(market, dict):
             raise ConfigError("market section is required")
@@ -469,23 +592,27 @@ class ConfigLoader:
         if seconds < 10:
             raise ConfigError("polling.seconds must be at least 10")
 
+        startup_poll_logs = int(polling.get("startup_poll_logs", 3))
+        if startup_poll_logs < 0:
+            raise ConfigError("polling.startup_poll_logs must be 0 or greater")
+        if 0 < startup_poll_logs < 3:
+            raise ConfigError("polling.startup_poll_logs must be at least 3 (or 0 to skip)")
+
         cli = raw.get("cli", {})
         max_visible = int(cli.get("max_visible_polls", 3))
         if max_visible < 1:
             raise ConfigError("cli.max_visible_polls must be at least 1")
 
-        broker = raw.get("broker", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or broker.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or broker.get("access_token", "")
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
         if not client_id or not access_token:
             raise ConfigError(
-                "Broker credentials missing. Set broker.client_id and broker.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env"
             )
 
         loader = ConfigLoader.__new__(ConfigLoader)
         loader._config = raw
-        loader.parse_timeframe_minutes()
+        loader.get_dhan_timeframe()
 
 
 _config_loader: ConfigLoader | None = None

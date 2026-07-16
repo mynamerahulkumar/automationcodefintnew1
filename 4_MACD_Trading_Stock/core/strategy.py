@@ -56,16 +56,23 @@ class SignalResult:
 
 
 def compute_ema_series(closes: list[float], period: int) -> list[float]:
-    """Compute EMA series using incremental formula."""
-    if not closes or period <= 0:
+    """
+    Compute EMA series using TradingView-style SMA seed.
+
+    First ``period`` closes form an SMA seed; subsequent values use the
+    standard EMA formula. Early bars before the seed are left as NaN so
+    the series stays aligned with ``closes``.
+    """
+    if not closes or period <= 0 or len(closes) < period:
         return []
 
     k = 2.0 / (period + 1)
-    ema_values: list[float] = []
-    ema = float(closes[0])
+    ema_values: list[float] = [float("nan")] * (period - 1)
+
+    ema = sum(closes[:period]) / float(period)
     ema_values.append(ema)
 
-    for price in closes[1:]:
+    for price in closes[period:]:
         ema = float(price) * k + ema * (1.0 - k)
         ema_values.append(ema)
 
@@ -119,22 +126,45 @@ def compute_macd_series(
     MACD line = EMA(fast) - EMA(slow)
     Signal line = EMA(MACD, signal_period)
     Histogram = MACD - Signal
+
+    Leading NaNs from SMA-seeded EMAs are stripped before the signal EMA
+    so the series stays TradingView-aligned.
     """
     if len(closes) < slow_period + signal_period:
         return [], [], []
 
     fast_ema = compute_ema_series(closes, fast_period)
     slow_ema = compute_ema_series(closes, slow_period)
+    if not fast_ema or not slow_ema:
+        return [], [], []
 
     macd_line: list[float] = []
     for fast_val, slow_val in zip(fast_ema, slow_ema):
-        macd_line.append(fast_val - slow_val)
+        if fast_val != fast_val or slow_val != slow_val:  # NaN
+            macd_line.append(float("nan"))
+        else:
+            macd_line.append(fast_val - slow_val)
 
-    signal_line = compute_ema_series(macd_line, signal_period)
+    valid_macd = [v for v in macd_line if v == v]
+    if len(valid_macd) < signal_period:
+        return [], [], []
+
+    signal_valid = compute_ema_series(valid_macd, signal_period)
+    if not signal_valid:
+        return [], [], []
+
+    # Align signal back onto full-length series (NaN until MACD is valid + seeded).
+    signal_line: list[float] = [float("nan")] * len(macd_line)
+    valid_indices = [i for i, v in enumerate(macd_line) if v == v]
+    for idx, sig in zip(valid_indices, signal_valid):
+        signal_line[idx] = sig
 
     histogram: list[float] = []
     for macd_val, sig_val in zip(macd_line, signal_line):
-        histogram.append(macd_val - sig_val)
+        if macd_val != macd_val or sig_val != sig_val:
+            histogram.append(float("nan"))
+        else:
+            histogram.append(macd_val - sig_val)
 
     return macd_line, signal_line, histogram
 
@@ -235,6 +265,14 @@ def generate_signal(
         macd_prev, macd_curr = macd_line[-2], macd_line[-1]
         signal_prev, signal_curr = signal_line[-2], signal_line[-1]
         histogram_curr = histogram[-1] if histogram else None
+        # Skip until SMA-seeded MACD/signal have valid (non-NaN) values.
+        if (
+            macd_curr != macd_curr
+            or signal_curr != signal_curr
+            or macd_prev != macd_prev
+            or signal_prev != signal_prev
+        ):
+            return _empty_result(candles)
 
     if mode_upper in {StrategyMode.RSI.value, StrategyMode.MACD_RSI.value}:
         rsi_series = compute_rsi_series(closes, rsi_period)

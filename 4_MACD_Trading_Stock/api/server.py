@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from core.config_loader import ConfigError, build_equity_index, get_config_loader, get_security_master_path
+from core.config_loader import ConfigError, get_config_loader, source_label
 from core.dhan_client import reset_dhan_client
 from core.logger import LOG_FILE, get_logger, setup_logger
 from core.order_manager import OrderManagerError
@@ -31,7 +31,6 @@ async def lifespan(_: FastAPI):
             str(log_cfg.get("level", "INFO")),
             console=os.environ.get("LOG_CONSOLE", "").lower() in {"1", "true", "yes"},
         )
-        build_equity_index()
         market = loader.get_market_config()
         instrument = loader.get_resolved_instrument()
         engine._sync_state_from_config()
@@ -40,7 +39,7 @@ async def lifespan(_: FastAPI):
             "Resolved %s -> security_id %s from %s",
             market.get("trading_symbol"),
             instrument["security_id"],
-            get_security_master_path().name,
+            source_label(str(instrument.get("source", "csv"))),
         )
         engine.start()
     except ConfigError as exc:

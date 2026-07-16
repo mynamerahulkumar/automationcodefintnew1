@@ -411,8 +411,13 @@ class PollingScheduler:
             while not self._stop_event.is_set():
                 try:
                     callback()
-                except Exception:
-                    logger.exception("Unhandled error in poll cycle")
+                except Exception as exc:
+                    logger.error(
+                        "Unhandled error in poll cycle: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    logger.exception("Unhandled error in poll cycle traceback")
                 self._stop_event.wait(self.interval_seconds)
             logger.info("Polling stopped")
 
