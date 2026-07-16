@@ -6,14 +6,21 @@ import gc
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+
+try:
+    from zoneinfo import ZoneInfo
+
+    IST = ZoneInfo("Asia/Kolkata")
+except ImportError:  # Python < 3.9
+    import pytz
+
+    IST = pytz.timezone("Asia/Kolkata")
 
 from core.config_loader import ConfigLoader, get_config_loader, resolve_instrument
 from core.dhan_client import get_dhanhq_lite
 from core.logger import get_logger
 
 logger = get_logger()
-IST = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass
@@ -209,6 +216,8 @@ class MarketDataService:
         try:
             dhan = get_dhanhq_lite(self.config_loader)
             to_date = _ist_today()
+            # Dhan daily toDate is non-inclusive — use tomorrow so today is included.
+            api_to = (to_date + timedelta(days=1)).isoformat()
             if timeframe == "DAY":
                 from_date = to_date - timedelta(days=400)
                 response = dhan.historical_daily_data(
@@ -216,7 +225,7 @@ class MarketDataService:
                     exchange_segment,
                     instrument_type,
                     from_date.isoformat(),
-                    to_date.isoformat(),
+                    api_to,
                     0,
                 )
             else:
@@ -227,7 +236,7 @@ class MarketDataService:
                     exchange_segment,
                     instrument_type,
                     from_date.isoformat(),
-                    to_date.isoformat(),
+                    api_to,
                     interval,
                 )
         except MemoryError:
@@ -309,18 +318,17 @@ class MarketDataService:
         try:
             dhan = get_dhanhq_lite(self.config_loader)
             payload = {exchange_segment: [int(security_id)]}
-            data = dhan.ticker_data(payload)
-            if isinstance(data, dict) and data.get("status") != "failure":
-                nested = (data.get("data") or {}).get("data") or {}
-                if isinstance(nested, dict):
-                    for segment_data in nested.values():
-                        if not isinstance(segment_data, dict):
-                            continue
-                        for values in segment_data.values():
-                            if isinstance(values, dict) and "last_price" in values:
-                                price = values["last_price"]
-                                if isinstance(price, (int, float)) and price > 0:
-                                    return self._cache_ltp(float(price))
+            data = None
+            for attempt in range(3):
+                data = dhan.ticker_data(payload)
+                if isinstance(data, dict) and data.get("status") != "failure":
+                    price = _extract_last_price(data)
+                    if price is not None:
+                        return self._cache_ltp(price)
+                if attempt < 2:
+                    import time
+
+                    time.sleep(0.4 * (attempt + 1))
             logger.error(
                 "LTP fetch failed for %s — Dhan API error: %s",
                 symbol,
@@ -332,6 +340,21 @@ class MarketDataService:
         except Exception as exc:
             logger.error("LTP fetch failed for %s: %s", symbol, exc)
         return None
+
+
+def _extract_last_price(payload: Any) -> float | None:
+    """Find last_price in Dhan LTP response (SDK or raw REST shapes)."""
+    if not isinstance(payload, dict):
+        return None
+    if "last_price" in payload:
+        price = payload["last_price"]
+        if isinstance(price, (int, float)) and price > 0:
+            return float(price)
+    for value in payload.values():
+        found = _extract_last_price(value)
+        if found is not None:
+            return found
+    return None
 
 
 _market_data_service: MarketDataService | None = None

@@ -84,6 +84,12 @@ def print_startup_banner(loader) -> None:
     print(f"Stop Loss        : {risk.get('stop_loss_percent')}%")
     print(f"Polling          : {polling} Seconds")
     print(f"Startup Polls    : {startup_poll_logs}")
+    print(f"Python           : {sys.version.split()[0]}")
+    if sys.version_info < (3, 10):
+        print(
+            "Note             : Python <3.10 — market data uses REST; "
+            "upgrade to 3.10+ for live order placement (dhanhq 2.2)"
+        )
     print("=" * 50)
     print()
     print("Bot Started Successfully...")
@@ -206,6 +212,16 @@ def _extract_poll_error(line: str) -> str | None:
         return (
             "Out of memory — keep security_id in config.yaml; "
             "do not load api-scrip-master.csv on 1GB VMs"
+        )
+    if "invalid syntax" in lowered_msg and "_super_order" in lowered_msg:
+        return (
+            "dhanhq needs Python 3.10+ (match/case). "
+            "Redeploy this build (REST market data) or upgrade Python on AWS"
+        )
+    if "invalid syntax" in lowered_msg:
+        return (
+            f"Python syntax error — {message}. "
+            "Use Python 3.10+ on AWS (check: python3 --version)"
         )
     if "modulenotfounderror" in lowered_msg or "no module named" in lowered_msg:
         missing = message.rsplit(":", 1)[-1].strip().strip("'\"")

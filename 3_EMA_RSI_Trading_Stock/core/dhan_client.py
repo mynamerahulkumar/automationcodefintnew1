@@ -1,4 +1,4 @@
-"""Lazy Dhan clients — lightweight dhanhq for data, Dhan_SRP for orders."""
+"""Lazy Dhan clients — REST for data (any Python), Dhan_SRP for orders."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.config_loader import ConfigLoader, get_config_loader, get_security_master_path
+from core.dhan_rest import DhanRestClient
 from core.logger import get_logger
 
 if TYPE_CHECKING:
@@ -36,11 +37,12 @@ def _should_skip_instrument_master(loader: ConfigLoader) -> bool:
     return bool(str(market.get("security_id") or "").strip())
 
 
-def get_dhanhq_lite(config_loader: ConfigLoader | None = None) -> Any:
+def get_dhanhq_lite(config_loader: ConfigLoader | None = None) -> DhanRestClient:
     """
-    Return a lightweight dhanhq SDK client (no Dhan_SRP / CSV / mibian).
+    Return a lightweight REST client for candles + LTP.
 
-    Use this for candle + LTP polling on low-RAM hosts (e.g. 1GB AWS).
+    Does not import ``dhanhq`` (avoids Python <3.10 SyntaxError from match/case
+    in dhanhq 2.2 ``_super_order.py``).
     """
     global _dhanhq_lite, _dhanhq_lite_key
 
@@ -51,11 +53,8 @@ def get_dhanhq_lite(config_loader: ConfigLoader | None = None) -> Any:
     if _dhanhq_lite is not None and _dhanhq_lite_key == cred_key:
         return _dhanhq_lite
 
-    from dhanhq import DhanContext, dhanhq
-
-    logger.info("Initializing lightweight dhanhq client (market data only)")
-    context = DhanContext(client_id, access_token)
-    _dhanhq_lite = dhanhq(context)
+    logger.info("Initializing Dhan REST client (market data, no dhanhq SDK)")
+    _dhanhq_lite = DhanRestClient(client_id, access_token)
     _dhanhq_lite_key = cred_key
     return _dhanhq_lite
 
@@ -63,6 +62,13 @@ def get_dhanhq_lite(config_loader: ConfigLoader | None = None) -> Any:
 def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
     """Return a shared Dhansrp instance; heavy import happens only on first use."""
     global _dhan_client, _dhan_credentials_key
+
+    if sys.version_info < (3, 10):
+        raise RuntimeError(
+            "Order placement needs Python 3.10+ (dhanhq 2.2 uses match/case). "
+            f"Current: {sys.version.split()[0]}. Upgrade Python on this host, or "
+            "pip install 'dhanhq==2.0.2' for older Python."
+        )
 
     loader = config_loader or get_config_loader()
     client_id, access_token = loader.get_broker_credentials()
@@ -72,7 +78,13 @@ def get_dhan_client(config_loader: ConfigLoader | None = None) -> Dhansrp:
     if _dhan_client is not None and _dhan_credentials_key == cred_key:
         return _dhan_client
 
-    from Dhan_SRP import Dhansrp  # noqa: WPS433
+    try:
+        from Dhan_SRP import Dhansrp  # noqa: WPS433
+    except SyntaxError as exc:
+        raise RuntimeError(
+            "Failed to import dhanhq/Dhan_SRP due to Python syntax mismatch "
+            f"({exc}). Use Python 3.10+ or pip install 'dhanhq==2.0.2'."
+        ) from exc
 
     logger.info(
         "Initializing Dhan client (skip_instrument_master=%s)",

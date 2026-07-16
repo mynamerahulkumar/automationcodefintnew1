@@ -7,7 +7,9 @@ numpy
 ta
 colorama
 psutil
-dhanhq
+# dhanhq 2.2+ needs Python 3.10+ (match/case). Market data uses REST and works on 3.9.
+# For live orders on Python <3.10: pip install 'dhanhq==2.0.2'
+dhanhq>=2.0.2
 pytz
 mibian
 python-dotenv
