@@ -5,7 +5,6 @@ except ImportError:
 	DhanContext = None
 	MarketFeed = None
 	OrderUpdate = None
-import mibian
 import datetime
 import numpy as np
 import pandas as pd
@@ -26,6 +25,17 @@ import urllib.parse
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 print("Codebase Version 2.8 : Solved - Strike Selection Issue")
+
+# Lazy-load mibian (pulls scipy) only when option pricing helpers are used.
+mibian = None
+
+
+def _get_mibian():
+	global mibian
+	if mibian is None:
+		import mibian as _mibian
+		mibian = _mibian
+	return mibian
 
 NIFTY50_SECURITY_IDS = {
 	"ADANIENT": 25,
@@ -836,11 +846,14 @@ class Dhansrp:
 
 	def get_start_date(self):
 		try:
+			start_date = (datetime.datetime.now()-datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+			to_date = datetime.datetime.now().strftime('%Y-%m-%d')
+			# When instrument master is skipped, use a safe default date window.
+			if getattr(self, 'instrument_df', None) is None or self.instrument_df.empty:
+				return start_date, to_date
 			instrument_df = self.instrument_df.copy()
 			from_date= datetime.datetime.now()-datetime.timedelta(days=100)
-			start_date = (datetime.datetime.now()-datetime.timedelta(days=5)).strftime('%Y-%m-%d')
 			from_date = from_date.strftime('%Y-%m-%d')
-			to_date = datetime.datetime.now().strftime('%Y-%m-%d')
 			instrument_exchange = {'NSE':"NSE",'BSE':"BSE",'NFO':'NSE','BFO':'BSE','MCX':'MCX','CUR':'NSE'}
 			tradingsymbol = "NIFTY"
 			exchange = "NSE"
@@ -865,15 +878,13 @@ class Dhansrp:
 			self.logger.exception(f"Error at getting start date as {e}")
 			return start_date, to_date
 
-	def get_historical_data(self,tradingsymbol,exchange,timeframe, debug="NO"):			
+	def get_historical_data(self,tradingsymbol,exchange,timeframe, debug="NO", security_id=None, instrument_type=None):			
 		try:
 			tradingsymbol = tradingsymbol.upper()
 			exchange = exchange.upper()
-			instrument_df = self.instrument_df.copy()
 			from_date= datetime.datetime.now()-datetime.timedelta(days=365)
 			from_date = from_date.strftime('%Y-%m-%d')
 			to_date = datetime.datetime.now().strftime('%Y-%m-%d') 
-			# script_exchange = {"NSE":self.Dhan.NSE, "NFO":self.Dhan.NSE_FNO, "BFO":self.Dhan.BSE_FNO, "CUR": self.Dhan.CUR, "BSE":self.Dhan.BSE, "MCX":self.Dhan.MCX}
 			script_exchange = {"NSE":self.Dhan.NSE, "NFO":self.Dhan.FNO, "BFO":"BSE_FNO", "CUR": self.Dhan.CUR, "BSE":self.Dhan.BSE, "MCX":self.Dhan.MCX, "INDEX":self.Dhan.INDEX}
 			instrument_exchange = {'NSE':"NSE",'BSE':"BSE",'NFO':'NSE','BFO':'BSE','MCX':'MCX','CUR':'NSE'}
 			exchange_segment = script_exchange[exchange]
@@ -881,23 +892,31 @@ class Dhansrp:
 			if tradingsymbol in index_exchange:
 				exchange =index_exchange[tradingsymbol]
 
-			if tradingsymbol in self.commodity_step_dict.keys():
+			if security_id is not None and str(security_id).strip():
+				# Low-memory path: caller already resolved security_id (e.g. from config.yaml).
+				resolved_security_id = str(security_id).strip()
+				resolved_instrument_type = instrument_type or "EQUITY"
+				expiry_code = 0
+			elif tradingsymbol in self.commodity_step_dict.keys():
+				instrument_df = self._ensure_instrument_df().copy()
 				security_check = instrument_df[(instrument_df['SEM_EXM_EXCH_ID']=='MCX')&(instrument_df['SM_SYMBOL_NAME']==tradingsymbol.upper())&(instrument_df['SEM_INSTRUMENT_NAME']=='FUTCOM')]						
 				if security_check.empty:
 					raise Exception("Check the Tradingsymbol or Exchange")
-				security_id = security_check.sort_values(by='SEM_EXPIRY_DATE').iloc[0]['SEM_SMST_SECURITY_ID']
+				resolved_security_id = security_check.sort_values(by='SEM_EXPIRY_DATE').iloc[0]['SEM_SMST_SECURITY_ID']
 				tradingsymbol = security_check.sort_values(by='SEM_EXPIRY_DATE').iloc[0]['SEM_CUSTOM_SYMBOL']
-			else:						
+				resolved_instrument_type = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_INSTRUMENT_NAME']
+				expiry_code = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_EXPIRY_CODE']
+			else:
+				instrument_df = self._ensure_instrument_df().copy()
 				security_check = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])]
 				if security_check.empty:
 					raise Exception("Check the Tradingsymbol or Exchange")
-				security_id = security_check.iloc[-1]['SEM_SMST_SECURITY_ID']						
+				resolved_security_id = security_check.iloc[-1]['SEM_SMST_SECURITY_ID']						
+				resolved_instrument_type = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_INSTRUMENT_NAME']
+				expiry_code = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_EXPIRY_CODE']
 
-			Symbol 			= instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_TRADING_SYMBOL']
-			instrument_type = instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_INSTRUMENT_NAME']
-			if 'FUT' in instrument_type and timeframe.upper()=="DAY":
+			if 'FUT' in str(resolved_instrument_type) and timeframe.upper()=="DAY":
 				raise Exception('For Future or Commodity, DAY - Timeframe not supported by API, SO choose another timeframe')			
-			expiry_code 	= instrument_df[((instrument_df['SEM_TRADING_SYMBOL']==tradingsymbol)|(instrument_df['SEM_CUSTOM_SYMBOL']==tradingsymbol))&(instrument_df['SEM_EXM_EXCH_ID']==instrument_exchange[exchange])].iloc[-1]['SEM_EXPIRY_CODE']
 			if timeframe in ['1', '5', '15', '25', '60']:
 				interval = int(timeframe)
 			elif timeframe.upper()=="DAY":
@@ -906,10 +925,10 @@ class Dhansrp:
 				raise Exception("interval value must be ['1','5','15','25','60','DAY']")
 			if timeframe.upper() == "DAY":
 				time.sleep(2)			
-				ohlc = self.Dhan.historical_daily_data(int(security_id),exchange_segment,instrument_type,from_date,to_date,int(expiry_code))
+				ohlc = self.Dhan.historical_daily_data(int(resolved_security_id),exchange_segment,resolved_instrument_type,from_date,to_date,int(expiry_code))
 			else:
 				time.sleep(2)
-				ohlc = self.Dhan.intraday_minute_data(str(security_id),exchange_segment,instrument_type,self.start_date,self.end_date,int(interval))
+				ohlc = self.Dhan.intraday_minute_data(str(resolved_security_id),exchange_segment,resolved_instrument_type,self.start_date,self.end_date,int(interval))
 			
 			if debug.upper()=="YES":
 				print(ohlc)
@@ -1794,8 +1813,9 @@ class Dhansrp:
 			# ltp = self.get_ltp(script)
 
 			if scrip_type == 'CE':
-				civ = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], callPrice= ltp)
-				cval = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = civ.impliedVolatility ,callPrice= ltp)
+				_m = _get_mibian()
+				civ = _m.BS([asset_price, strike, interest_rate, days_to_expiry], callPrice= ltp)
+				cval = _m.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = civ.impliedVolatility ,callPrice= ltp)
 				if flag == "price":
 					return cval.callPrice
 				if flag == "delta":
@@ -1814,8 +1834,9 @@ class Dhansrp:
 					return {'callPrice' : cval.callPrice, 'callDelta' : cval.callDelta, 'callDelta2' : cval.callDelta2, 'callTheta' : cval.callTheta, 'callRho' : cval.callRho, 'vega' : cval.vega, 'gamma' : cval.gamma}
 
 			if scrip_type == "PE":
-				piv = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], putPrice= ltp)
-				pval = mibian.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = piv.impliedVolatility ,putPrice= ltp)
+				_m = _get_mibian()
+				piv = _m.BS([asset_price, strike, interest_rate, days_to_expiry], putPrice= ltp)
+				pval = _m.BS([asset_price, strike, interest_rate, days_to_expiry], volatility = piv.impliedVolatility ,putPrice= ltp)
 				if flag == "price":
 					return pval.putPrice
 				if flag == "delta":

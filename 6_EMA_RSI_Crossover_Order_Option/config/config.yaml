@@ -1,0 +1,44 @@
+# Credentials live in .env (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN) — not here.
+
+market:
+  exchange: NSE
+  instrument: STOCK
+  trading_symbol: BANKNIFTY-Aug2026-31000-CE
+  security_id: "35564"
+  expiry: ""
+  strike: ""
+  option_type: "CE"
+
+strategy:
+  mode: EMA_RSI
+  timeframe: 1d
+
+polling:
+  seconds: 30
+  startup_poll_logs: 3
+
+ema:
+  enabled: true
+  fast: 9
+  slow: 21
+
+rsi:
+  enabled: true
+  period: 14
+  buy: 60
+  sell: 40
+
+trade:
+  quantity: 1
+  order_type: LIMIT
+  product_type: CNC
+  transaction_type: BUY
+  limit_buffer: 0.10
+  paper_trade: false
+
+risk:
+  take_profit_percent: 1
+  stop_loss_percent: 0.5
+
+logging:
+  level: INFO
