@@ -82,6 +82,11 @@ def resolve_equity_security(
     config_id = str(security_id).strip() if security_id else ""
 
     if config_id:
+        logger.info(
+            "Using config security_id %s for %s (CSV lookup skipped)",
+            config_id,
+            stock_name,
+        )
         return {
             "security_id": config_id,
             "trading_symbol": stock_name.upper(),

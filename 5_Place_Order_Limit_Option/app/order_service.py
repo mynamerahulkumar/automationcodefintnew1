@@ -35,7 +35,9 @@ class OrderService:
         return self.config_loader.summary()
 
     def place_order_from_config(self) -> dict[str, Any]:
-        """Read config, resolve security, and place a LIMIT order."""
+        """Re-read config.yaml from disk, resolve security, and place a LIMIT order."""
+        # Always reload so edits to config.yaml apply without a server restart.
+        self.config_loader.reload()
         trading = self.config_loader.get_trading_config()
         risk = self.config_loader.get_risk_config()
         cloud = self.config_loader.get_cloud_config()
@@ -49,9 +51,11 @@ class OrderService:
         stock_name = str(trading.get("stock_name", ""))
 
         logger.info(
-            "Placing order: segment=%s symbol=%s qty=%s price=%s dry_run=%s",
+            "Placing order from %s: segment=%s symbol=%s security_id=%s qty=%s price=%s dry_run=%s",
+            self.config_loader.config_path,
             trading.get("segment"),
             stock_name,
+            trading.get("security_id") or "(from CSV)",
             quantity,
             limit_price,
             dry_run,
@@ -98,10 +102,21 @@ class OrderService:
                     "Dhan authentication failed (DH-901). Refresh DHAN_ACCESS_TOKEN in .env.",
                     status_code=401,
                 ) from exc
-            if isinstance(exc, (SyntaxError, RuntimeError)) and (
-                "match/case" in lower or "_super_order" in lower or "3.10" in lower
+            if (
+                "invalid syntax" in lower
+                or "_super_order" in lower
+                or "match/case" in lower
+                or (
+                    isinstance(exc, (SyntaxError, RuntimeError))
+                    and "3.10" in lower
+                )
             ):
-                raise OrderServiceError(message, status_code=500) from exc
+                raise OrderServiceError(
+                    "dhanhq needs Python 3.10+ (match/case in _super_order.py). "
+                    f"Current error: {message}. "
+                    "Upgrade Python on this host, or: pip install 'dhanhq==2.0.2'",
+                    status_code=500,
+                ) from exc
             logger.exception("Unexpected error placing order")
             raise OrderServiceError(message, status_code=500) from exc
 

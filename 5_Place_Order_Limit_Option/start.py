@@ -63,7 +63,7 @@ def print_startup_summary() -> None:
     print("=" * 55)
     print("Dhan Limit Order API - Startup Check")
     print("=" * 55)
-    print(f"Config file:    config/config.yaml")
+    print(f"Config file:    {loader.config_path}")
     print(f"Credentials:    .env (DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN)")
     print(f"CSV master:     security_id/api-scrip-master.csv")
     print(f"Segment:        {trading.get('segment')}")
@@ -82,6 +82,8 @@ def print_startup_summary() -> None:
             "(dhanhq 2.2), or pin dhanhq==2.0.2"
         )
     print("=" * 55)
+    print("Tip:           Edit config.yaml then re-run start.py (or POST /reload-config).")
+    print("               trading.log keeps old lines — check the newest timestamp.")
 
 
 def stop_existing_server() -> None:
@@ -105,8 +107,8 @@ def wait_for_server() -> bool:
     return False
 
 
-def print_order_result(data: dict, status_code: int) -> None:
-    """Print a clear order placement result in the CLI."""
+def print_order_result(data: dict, status_code: int) -> bool:
+    """Print a clear order placement result in the CLI. Returns True on success/dry_run."""
     print("=" * 55)
     print("ORDER PLACEMENT RESULT")
     print("=" * 55)
@@ -117,53 +119,57 @@ def print_order_result(data: dict, status_code: int) -> None:
         print(f"Order ID:     {data.get('order_id', 'N/A')}")
         print(f"Security ID:  {data.get('security_id', 'N/A')}")
         print(f"Symbol:       {data.get('symbol', 'N/A')}")
-    elif status == "dry_run":
+        print("=" * 55)
+        return True
+    if status == "dry_run":
         print("Result:       DRY RUN ONLY (order NOT sent to Dhan)")
         print(f"Security ID:  {data.get('security_id', 'N/A')}")
         print(f"Symbol:       {data.get('symbol', 'N/A')}")
         preview = data.get("preview")
         if preview:
             print(f"Preview:      {preview}")
-    else:
-        print("Result:       ORDER NOT PLACED")
-        print(f"HTTP Status:  {status_code}")
-        message = str(data.get("message", data))
-        print(f"Message:      {message}")
-        hint = _error_hint(message)
-        if hint:
-            print(f"Note:         {hint}")
-        elif status_code in {502, 503, 504}:
-            print("Note:         Dhan API unavailable or network issue.")
+        print("=" * 55)
+        return True
 
+    message = str(data.get("message", data))
+    print("Result:       ORDER NOT PLACED")
+    print(f"HTTP Status:  {status_code}")
+    print(f"ERROR:        {message}")
+    hint = _error_hint(message)
+    if hint:
+        print(f"Fix:          {hint}")
+    elif status_code in {502, 503, 504}:
+        print("Fix:          Dhan API unavailable or network issue.")
+    print(f"Python:       {sys.version.split()[0]}")
     print("=" * 55)
+    return False
 
 
-def place_order_on_startup() -> None:
-    """Call /place-order after server is ready and print the result."""
+def place_order_on_startup() -> bool:
+    """Call /place-order after server is ready and print the result. Returns True on ok."""
     from app.config_loader import get_config_loader
 
     cloud = get_config_loader().get_cloud_config()
     if not cloud.get("auto_place_order", True):
         print("auto_place_order is false — skipping order placement.")
-        return
+        return True
 
     print("Placing order from config...")
     if not wait_for_server():
-        print_order_result(
+        return print_order_result(
             {"status": "error", "message": "Server did not become ready in time"},
             503,
         )
-        return
 
     try:
         response = requests.post(PLACE_ORDER_URL, timeout=60)
         try:
             data = response.json()
         except ValueError:
-            data = {"status": "error", "message": response.text}
-        print_order_result(data, response.status_code)
+            data = {"status": "error", "message": response.text or "Non-JSON response from /place-order"}
+        return print_order_result(data, response.status_code)
     except requests.RequestException as exc:
-        print_order_result({"status": "error", "message": str(exc)}, 503)
+        return print_order_result({"status": "error", "message": str(exc)}, 503)
 
 
 def main() -> None:
@@ -174,10 +180,10 @@ def main() -> None:
         print_startup_summary()
     except Exception as exc:
         message = str(exc)
-        print(f"Startup failed: {message}")
+        print(f"ERROR: Startup failed: {message}")
         hint = _error_hint(message)
         if hint:
-            print(f"Note: {hint}")
+            print(f"Fix: {hint}")
         print(f"See logs: {LOG_DIR / 'trading.log'} and {UVICORN_OUT}")
         sys.exit(1)
 
@@ -215,9 +221,11 @@ def main() -> None:
 
     PID_FILE.write_text(str(process.pid), encoding="utf-8")
     print(f"Started FastAPI server on {HOST}:{PORT} (PID {process.pid})")
-    place_order_on_startup()
+    order_ok = place_order_on_startup()
     print(f"Tail logs:      python logs.py")
     print(f"Log file:       {LOG_DIR / 'trading.log'}")
+    if not order_ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
