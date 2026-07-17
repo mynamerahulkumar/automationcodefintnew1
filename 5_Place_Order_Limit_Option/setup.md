@@ -172,20 +172,30 @@ This file should already exist in the repo. If missing, download Dhan’s scrip 
 
 ## 6. Configure Credentials & Trading
 
-Edit `config/config.yaml`.
+### Credentials (required) — `.env`
+
+```bash
+cp .env.example .env
+# then edit .env with real values
+```
+
+```env
+DHAN_CLIENT_ID=YOUR_CLIENT_ID
+DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
+```
+
+> Do not put tokens in `config.yaml`. Do not commit `.env`. After changing `.env`, restart (`python stop.py && python start.py`).
+
+### Trading settings — `config/config.yaml`
 
 ### Example — equity (stock) order
 
 ```yaml
-dhan:
-  client_id: "YOUR_CLIENT_ID"
-  access_token: "YOUR_ACCESS_TOKEN"
-
 trading:
   segment: EQUITY
   exchange: NSE
   stock_name: HDFCBANK
-  security_id: ""              # leave empty for auto lookup from CSV
+  security_id: "1333"          # required on 1GB VMs; skips instrument CSV
   quantity: 1
   product_type: INTRADAY
   transaction_type: BUY
@@ -224,9 +234,15 @@ trading:
   limit_price: 120.0
 ```
 
-### Credentials via environment variables (optional)
+### Credentials via environment / `.env` (required)
 
-Instead of putting secrets in YAML, you can set:
+Copy the example file, then edit:
+
+```bash
+cp .env.example .env
+```
+
+Or export in the shell:
 
 **Mac / Linux:**
 
@@ -249,7 +265,7 @@ set DHAN_CLIENT_ID=YOUR_CLIENT_ID
 set DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
 ```
 
-> Do not commit real `client_id` or `access_token` to git.
+> Do not commit real credentials to git. Prefer `.env` over shell exports for local/AWS runs.
 
 ---
 
@@ -414,7 +430,11 @@ Whitelist the **VPS public IP** in Dhan before live trading.
 | `python: command not found` | Use `python3` on Mac/Linux, or reinstall Python on Windows with PATH enabled |
 | `No module named 'fastapi'` | Activate venv, then `pip install -r requirements.txt` |
 | `Security ID not found for stock` | Check `stock_name` spelling; ensure `security_id/api-scrip-master.csv` exists |
-| `Credentials not found` | Fill `dhan.client_id` and `dhan.access_token` or set env vars |
+| `Credentials not found` / `Broker credentials missing` | Copy `.env.example` → `.env` and set `DHAN_CLIENT_ID` / `DHAN_ACCESS_TOKEN` |
+| `DH-901` / Invalid Authentication | Refresh `DHAN_ACCESS_TOKEN` in `.env`, then restart |
+| `DH-902` | Subscribe to Dhan Data APIs |
+| `invalid syntax` / `_super_order` | Use Python 3.10+ or `pip install 'dhanhq==2.0.2'` |
+| `MemoryError` | Set `trading.security_id` in config; skip loading instrument CSV |
 | `Invalid IP` / `DH-905` | Whitelist your public IP in Dhan API settings |
 | Order fails outside market hours | Use AMO only if intended; otherwise trade during NSE session |
 | Port 7001 already in use | Run `python stop.py` (Mac/Linux) or kill the old process |

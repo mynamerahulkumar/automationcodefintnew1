@@ -87,11 +87,21 @@ class OrderService:
             raise OrderServiceError(str(exc), status_code=400) from exc
         except Exception as exc:
             message = str(exc)
-            if "credential" in message.lower() or "auth" in message.lower():
+            lower = message.lower()
+            if (
+                "credential" in lower
+                or "auth" in lower
+                or "dh-901" in lower
+                or "invalid token" in lower
+            ):
                 raise OrderServiceError(
-                    "Dhan authentication failed. Check client_id and access_token.",
+                    "Dhan authentication failed (DH-901). Refresh DHAN_ACCESS_TOKEN in .env.",
                     status_code=401,
                 ) from exc
+            if isinstance(exc, (SyntaxError, RuntimeError)) and (
+                "match/case" in lower or "_super_order" in lower or "3.10" in lower
+            ):
+                raise OrderServiceError(message, status_code=500) from exc
             logger.exception("Unexpected error placing order")
             raise OrderServiceError(message, status_code=500) from exc
 

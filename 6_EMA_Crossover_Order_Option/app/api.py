@@ -32,8 +32,9 @@ async def lifespan(_: FastAPI):
             str(bot_cfg.get("log_level", "INFO")),
             console=os.environ.get("LOG_CONSOLE", "").lower() in {"1", "true", "yes"},
         )
-        build_equity_index()
         trading = loader.get_trading_config()
+        if not str(trading.get("security_id") or "").strip():
+            build_equity_index()
         instrument = loader.get_resolved_instrument()
         state = get_bot_state()
         state.strategy_name = str(loader.get_strategy_config().get("name", "EMA_CROSSOVER"))
@@ -45,7 +46,9 @@ async def lifespan(_: FastAPI):
             "Resolved %s -> security_id %s from %s",
             trading.get("stock_name"),
             instrument["security_id"],
-            get_security_master_path().name,
+            get_security_master_path().name
+            if not str(trading.get("security_id") or "").strip()
+            else "config.yaml",
         )
         bot.start()
     except ConfigError as exc:

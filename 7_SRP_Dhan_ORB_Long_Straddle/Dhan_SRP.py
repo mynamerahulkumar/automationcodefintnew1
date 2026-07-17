@@ -92,7 +92,7 @@ class Dhansrp:
 	call                                            : str
 	put                                             : str
 
-	def __init__(self,ClientCode:str=None,token_id:str=None,config_path:str=None,enable_file_logging:bool=False,instrument_cache_path:str=None,persist_instrument_file:bool=False):
+	def __init__(self,ClientCode:str=None,token_id:str=None,config_path:str=None,enable_file_logging:bool=False,instrument_cache_path:str=None,persist_instrument_file:bool=False,skip_instrument_master:bool=False):
 		'''
 		Clientcode                              = The ClientCode in string 
 		token_id                                = The token_id in string 
@@ -101,6 +101,7 @@ class Dhansrp:
 		self.enable_file_logging = enable_file_logging
 		self.instrument_cache_path = instrument_cache_path
 		self.persist_instrument_file = persist_instrument_file
+		self.skip_instrument_master = bool(skip_instrument_master)
 		self.logger = self._setup_logger(enable_file_logging=enable_file_logging)
 		logging.info('Dhan.py  started system')
 		logging.getLogger("requests").setLevel(logging.WARNING)
@@ -191,8 +192,13 @@ class Dhansrp:
 			self.ClientCode, self.token_id = self._resolve_credentials(ClientCode, token_id, self.config_path)
 			print("-----Logged into Dhan-----")
 			self.Dhan = self._build_client(self.ClientCode, self.token_id)
-			self.instrument_df = self.get_instrument_file()
-			print('Got the instrument file')
+			if getattr(self, 'skip_instrument_master', False):
+				# Avoid loading ~200k-row CSV into pandas (saves hundreds of MB on 1GB hosts).
+				self.instrument_df = pd.DataFrame()
+				print('Skipping instrument master CSV (using config security_id)')
+			else:
+				self.instrument_df = self.get_instrument_file()
+				print('Got the instrument file')
 		except Exception as e:
 			print(e)
 			self.logger.exception(f'got exception in get_login as {e} ')

@@ -10,12 +10,15 @@ Production-ready algorithmic trading bot for Dhan Broker.
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env
+# edit .env with DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN
 ```
 
-Edit `config/config.yaml` (or set `DHAN_CLIENT_ID` / `DHAN_ACCESS_TOKEN`):
+Edit `config/config.yaml`:
 
-- Keep `bot.paper_trade: true` until you are ready for live orders
-- Set `trading.underlying`, `quantity`, `entry_time`, EMA and risk params
+- Keep `bot.paper_trade: true` until ready for live orders
+- Set `security.security_id` (NIFTY=`13`) — required on 1GB AWS VMs
+- Align `ema.timeframe` with your chart (`5m` / `15m` / `1d`)
 
 ```bash
 python start.py
@@ -33,21 +36,20 @@ FastAPI runs on `http://0.0.0.0:7003`
 | `GET /logs` | Recent log lines |
 | `POST /stop` | Graceful square-off + stop |
 
-## Strategy flow
+## Low-RAM / AWS notes
 
-1. Wait until `strategy.entry_time`
-2. Buy ATM CE + ATM PE (configurable quantity / strike type)
-3. Monitor EMA9 / EMA21 on the underlying
-4. Bullish cross → exit PUT, trail CALL
-5. Bearish cross → exit CALL, trail PUT
-6. Remaining leg uses % target, % SL, trailing stop, and square-off time
+- Poll path uses REST only (no `dhanhq` import) — works on Python 3.9+
+- Orders need Python 3.10+ (or pin `dhanhq==2.0.2`)
+- Credentials live in `.env` only — never in `config.yaml`
+- EMA uses TradingView-style SMA seed for chart alignment
 
 ## Layout
 
 ```
-app/                 # FastAPI, bot, strategy, services
+app/                 # FastAPI, bot, strategy, REST market data
 config/config.yaml
-security_id/         # api-scrip-master.csv
+.env.example
+security_id/         # api-scrip-master.csv (option lookup at entry)
 start.py stop.py logs.py
 Dhan_SRP.py
 ```

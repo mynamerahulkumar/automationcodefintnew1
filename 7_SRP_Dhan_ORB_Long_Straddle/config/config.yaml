@@ -40,13 +40,11 @@ risk:
 
 security:
   symbol: NIFTY
-  security_id:
+  security_id: "13"   # required on 1GB VMs — skip heavy CSV for underlying
 
 logging:
   level: INFO
   console: true
   file: true
 
-dhan:
-  client_id: ""
-  access_token: ""
+# Credentials live in .env (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN) — not here.

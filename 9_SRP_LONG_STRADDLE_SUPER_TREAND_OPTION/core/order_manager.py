@@ -49,11 +49,13 @@ class OrderManager:
         paper = self.config_loader.is_paper_trade()
         max_retries = int(order_cfg.get("max_retries", 3))
 
-        call_ltp = self.market_data.fetch_ltp_for_symbol(
-            selected.call.get("custom_symbol") or selected.call["trading_symbol"]
-        )
-        put_ltp = self.market_data.fetch_ltp_for_symbol(
-            selected.put.get("custom_symbol") or selected.put["trading_symbol"]
+        call_ltp, put_ltp = self.market_data.fetch_option_ltps(
+            selected.call.get("security_id"),
+            selected.put.get("security_id"),
+            call_symbol=selected.call.get("custom_symbol")
+            or selected.call.get("trading_symbol"),
+            put_symbol=selected.put.get("custom_symbol")
+            or selected.put.get("trading_symbol"),
         )
         if call_ltp is None or put_ltp is None:
             raise OrderManagerError("Unable to fetch option LTPs for entry", status_code=502)
@@ -133,7 +135,11 @@ class OrderManager:
         max_retries = int(order_cfg.get("max_retries", 3))
 
         symbol = target.custom_symbol or target.trading_symbol
-        ltp = self.market_data.fetch_ltp_for_symbol(symbol or "")
+        ltp = None
+        if target.security_id:
+            ltp = self.market_data.fetch_ltp_by_security_id(
+                target.security_id, "NSE_FNO", label=symbol
+            )
         if ltp is None:
             ltp = target.current_price or target.entry_price or 0.0
         sell_price = max(0.05, round(float(ltp) - buffer, 2))
@@ -304,7 +310,6 @@ class OrderManager:
         product_type = str(trading.get("product_type", "INTRADAY")).upper()
         validity = str(trading.get("validity", "DAY")).upper()
         order_type = str(order_cfg.get("order_type", "LIMIT")).upper()
-        dhan = get_dhan_client(self.config_loader)
 
         logger.info(
             "Order %s %s qty=%s price=%s type=%s dry_run=%s sid=%s",
@@ -317,6 +322,23 @@ class OrderManager:
             instrument.get("security_id"),
         )
 
+        # Paper mode: never import Dhan_SRP / dhanhq (keeps 1GB AWS RSS low).
+        if dry_run:
+            return {
+                "status": "paper_trade",
+                "order_id": f"PAPER-{instrument.get('security_id')}-{transaction_type}",
+                "limit_price": price,
+                "preview": {
+                    "security_id": instrument.get("security_id"),
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "order_type": order_type,
+                    "product_type": product_type,
+                },
+            }
+
+        dhan = get_dhan_client(self.config_loader)
         try:
             result = dhan.place_order(
                 symbol=instrument.get("trading_symbol"),
@@ -330,7 +352,7 @@ class OrderManager:
                 validity=validity,
                 instrument_name=instrument.get("instrument_name", "OPTIDX"),
                 lot_size=instrument.get("lot_size"),
-                dry_run=dry_run,
+                dry_run=False,
             )
         except requests.exceptions.Timeout as exc:
             raise OrderManagerError("Dhan API request timed out", status_code=504) from exc
@@ -346,14 +368,6 @@ class OrderManager:
         if not validation.get("valid", True):
             errors = validation.get("errors", ["Order validation failed"])
             raise OrderManagerError("; ".join(errors), status_code=400)
-
-        if dry_run:
-            return {
-                "status": "paper_trade",
-                "order_id": f"PAPER-{instrument.get('security_id')}-{transaction_type}",
-                "limit_price": price,
-                "preview": result.get("preview"),
-            }
 
         response = result.get("response", {})
         if response.get("status") != "success":

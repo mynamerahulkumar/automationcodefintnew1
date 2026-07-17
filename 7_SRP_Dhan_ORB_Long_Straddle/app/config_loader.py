@@ -7,14 +7,32 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from app.logger import get_logger
 from app.utils import parse_hhmm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 logger = get_logger()
+
+_ENV_LOADED = False
+
+
+def load_env_file(env_path: Path | str | None = None) -> Path | None:
+    """Load credentials from project-root .env into os.environ (once)."""
+    global _ENV_LOADED
+    path = Path(env_path) if env_path else DEFAULT_ENV_PATH
+    if path.exists():
+        load_dotenv(path, override=False)
+        _ENV_LOADED = True
+        return path
+    if not _ENV_LOADED:
+        load_dotenv(override=False)
+        _ENV_LOADED = True
+    return path if path.exists() else None
 
 
 class ConfigError(Exception):
@@ -27,6 +45,7 @@ class ConfigLoader:
     def __init__(self, config_path: Path | str | None = None) -> None:
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._config: dict[str, Any] = {}
+        load_env_file()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -35,6 +54,7 @@ class ConfigLoader:
         return self._config
 
     def load(self) -> dict[str, Any]:
+        load_env_file()
         if not self.config_path.exists():
             raise ConfigError(f"Configuration file not found: {self.config_path}")
 
@@ -54,13 +74,13 @@ class ConfigLoader:
         return self.load()
 
     def get_broker_credentials(self) -> tuple[str, str]:
-        dhan = self.config.get("dhan", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or dhan.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or dhan.get("access_token", "")
+        load_env_file()
+        client_id = os.environ.get("DHAN_CLIENT_ID", "").strip()
+        access_token = os.environ.get("DHAN_ACCESS_TOKEN", "").strip()
         if not client_id or not access_token:
             raise ConfigError(
-                "Dhan credentials missing. Set dhan.client_id / dhan.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and "
+                "DHAN_ACCESS_TOKEN in .env"
             )
         return str(client_id), str(access_token)
 
@@ -109,6 +129,12 @@ class ConfigLoader:
 
     def is_paper_trade(self) -> bool:
         return bool(self.get_bot_config().get("paper_trade", False))
+
+    def get_underlying_security_id(self) -> str:
+        """Return configured underlying index security_id (e.g. NIFTY=13)."""
+        security = self.get_security_config()
+        sid = str(security.get("security_id") or "").strip()
+        return sid
 
     def summary(self) -> dict[str, Any]:
         trading = self.get_trading_config()

@@ -18,7 +18,7 @@ ema:
   enabled: true
   fast: 9
   slow: 21
-  timeframe_minutes: 5
+  timeframe: 5m   # match your chart: 5m / 15m / 1d
 
 trading:
   exchange: NSE
@@ -45,13 +45,10 @@ risk:
 
 security:
   symbol: NIFTY
-  security_id:
+  security_id: "13"   # required on 1GB VMs — skip CSV on poll path
+  # skip_instrument_master: false  # keep false for option CE/PE CSV lookup at entry
 
 logging:
   level: INFO
   console: true
   file: true
-
-dhan:
-  client_id: ""
-  access_token: ""

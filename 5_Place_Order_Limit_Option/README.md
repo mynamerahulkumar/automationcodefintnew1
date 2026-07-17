@@ -24,26 +24,37 @@ requirements.txt
 ## Setup
 
 ```bash
-cd 1_Place_Limit_Order_Stock
+cd 5_Place_Order_Limit_Option
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+# edit .env with DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN
 ```
 
 ## Configuration
 
-Edit `config/config.yaml`:
+### Credentials (`.env` only)
+
+```bash
+cp .env.example .env
+```
+
+```env
+DHAN_CLIENT_ID=YOUR_CLIENT_ID
+DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
+```
+
+Do not put tokens in `config.yaml`. After changing `.env`, restart (`python stop.py && python start.py`).
+
+### Trading settings (`config/config.yaml`)
 
 ```yaml
-dhan:
-  client_id: "YOUR_CLIENT_ID"
-  access_token: "YOUR_ACCESS_TOKEN"
-
 trading:
   segment: EQUITY          # EQUITY or OPTION
   exchange: NSE
   stock_name: HDFCBANK
-  security_id: ""          # optional override
+  security_id: "1333"      # set on 1GB VMs to skip instrument CSV
   quantity: 1
   product_type: INTRADAY
   transaction_type: BUY
@@ -60,14 +71,7 @@ cloud:
   console_log: false       # true for local dev, false on AWS 1GB VM
 ```
 
-Credentials can also be set via environment variables:
-
-```bash
-export DHAN_CLIENT_ID="..."
-export DHAN_ACCESS_TOKEN="..."
-```
-
-Security IDs are resolved automatically from `security_id/api-scrip-master.csv` using `stock_name`. For options, also set `expiry`, `strike`, and `option_type`.
+Security IDs are taken from `trading.security_id` when set; otherwise resolved from `security_id/api-scrip-master.csv` using `stock_name`. For options, also set `expiry`, `strike`, and `option_type`.
 
 ## Run on Cloud
 
@@ -123,7 +127,8 @@ Reloads `config/config.yaml` without restarting the server.
 
 ## Low-Memory Optimizations (1GB AWS VM)
 
-- **No duplicate CSV load** — security lookup uses stdlib `csv` with a compact equity index (~1MB); full pandas load happens only once inside `Dhan_SRP` on first order
+- **Set `trading.security_id`** — skips pandas load of `api-scrip-master.csv` inside `Dhan_SRP`
+- **Stream CSV lookup** — when `security_id` is empty, equity resolve streams until the first match (no full index)
 - **Lazy Dhan client** — `Dhan_SRP` (pandas/numpy/mibian) imports only when `/place-order` is called, not at startup
 - **Single worker** — uvicorn runs with `--workers 1` and limited concurrency
 - **File-only logging on cloud** — set `cloud.console_log: false` (default); use `python logs.py` to tail logs

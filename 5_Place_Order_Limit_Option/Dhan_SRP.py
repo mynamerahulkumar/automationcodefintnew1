@@ -92,15 +92,17 @@ class Dhansrp:
 	call                                            : str
 	put                                             : str
 
-	def __init__(self,ClientCode:str=None,token_id:str=None,config_path:str=None,enable_file_logging:bool=False,instrument_cache_path:str=None,persist_instrument_file:bool=False):
+	def __init__(self,ClientCode:str=None,token_id:str=None,config_path:str=None,enable_file_logging:bool=False,instrument_cache_path:str=None,persist_instrument_file:bool=False,skip_instrument_master:bool=False):
 		'''
 		Clientcode                              = The ClientCode in string 
 		token_id                                = The token_id in string 
+		skip_instrument_master                  = If True, do not load api-scrip-master.csv into pandas
 		'''
 		self.config_path = config_path
 		self.enable_file_logging = enable_file_logging
 		self.instrument_cache_path = instrument_cache_path
 		self.persist_instrument_file = persist_instrument_file
+		self.skip_instrument_master = bool(skip_instrument_master)
 		self.logger = self._setup_logger(enable_file_logging=enable_file_logging)
 		logging.info('Dhan.py  started system')
 		logging.getLogger("requests").setLevel(logging.WARNING)
@@ -191,12 +193,24 @@ class Dhansrp:
 			self.ClientCode, self.token_id = self._resolve_credentials(ClientCode, token_id, self.config_path)
 			print("-----Logged into Dhan-----")
 			self.Dhan = self._build_client(self.ClientCode, self.token_id)
-			self.instrument_df = self.get_instrument_file()
-			print('Got the instrument file')
+			if self.skip_instrument_master:
+				# Avoid loading ~200k-row CSV into pandas (saves hundreds of MB on 1GB hosts).
+				self.instrument_df = pd.DataFrame()
+				print('Skipping instrument master CSV (using config security_id)')
+			else:
+				self.instrument_df = self.get_instrument_file()
+				print('Got the instrument file')
 		except Exception as e:
 			print(e)
 			self.logger.exception(f'got exception in get_login as {e} ')
 			traceback.print_exc()
+
+	def _ensure_instrument_df(self):
+		"""Load instrument master on demand when symbol lookup is required."""
+		if getattr(self, 'instrument_df', None) is None or self.instrument_df.empty:
+			self.instrument_df = self.get_instrument_file()
+			print('Got the instrument file')
+		return self.instrument_df
 
 	def _normalize_instrument_df(self, instrument_df: pd.DataFrame):
 		instrument_df = instrument_df.copy()
@@ -288,6 +302,11 @@ class Dhansrp:
 		return {'security_id': str(row['SEM_SMST_SECURITY_ID']), 'trading_symbol': str(row['SEM_TRADING_SYMBOL']), 'lot_size': int(row['SEM_LOT_UNITS']) if not pd.isna(row.get('SEM_LOT_UNITS')) else None, 'tick_size': float(row['SEM_TICK_SIZE']) if not pd.isna(row.get('SEM_TICK_SIZE')) else None, 'expiry': str(row.get('SEM_EXPIRY_DATE', '')), 'instrument_name': str(row['SEM_INSTRUMENT_NAME'])}
 
 	def get_lot_size_from_master(self, security_id: str = None, trading_symbol: str = None, underlying: str = None):
+		# Avoid pandas CSV load when instrument master was intentionally skipped.
+		if getattr(self, 'skip_instrument_master', False) and (
+			getattr(self, 'instrument_df', None) is None or self.instrument_df.empty
+		):
+			return None
 		df = self.get_security_master()
 		if security_id is not None:
 			match = df[df['SEM_SMST_SECURITY_ID'].astype(str) == str(security_id)]
@@ -357,8 +376,12 @@ class Dhansrp:
 			errors.append(f"Invalid product_type '{product_type}' for equity segment '{exchange_segment}'.")
 		if exchange_segment in derivative_segments and product_type and product_type not in derivative_product_types:
 			errors.append(f"Invalid product_type '{product_type}' for derivative segment '{exchange_segment}'.")
-		effective_lot_size = lot_size or self.get_lot_size_from_master(security_id=security_id, trading_symbol=trading_symbol)
+		effective_lot_size = lot_size
 		if exchange_segment in derivative_segments and quantity:
+			if effective_lot_size is None:
+				effective_lot_size = self.get_lot_size_from_master(
+					security_id=security_id, trading_symbol=trading_symbol
+				)
 			if effective_lot_size is not None and quantity % effective_lot_size != 0:
 				errors.append(f'Derivative quantity must be a multiple of lot size {effective_lot_size}. Got {quantity}.')
 			elif effective_lot_size is None:
@@ -822,11 +845,14 @@ class Dhansrp:
 
 	def get_start_date(self):
 		try:
+			start_date = (datetime.datetime.now()-datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+			to_date = datetime.datetime.now().strftime('%Y-%m-%d')
+			# When instrument master is skipped, use a safe default date window.
+			if getattr(self, 'instrument_df', None) is None or self.instrument_df.empty:
+				return start_date, to_date
 			instrument_df = self.instrument_df.copy()
 			from_date= datetime.datetime.now()-datetime.timedelta(days=100)
-			start_date = (datetime.datetime.now()-datetime.timedelta(days=5)).strftime('%Y-%m-%d')
 			from_date = from_date.strftime('%Y-%m-%d')
-			to_date = datetime.datetime.now().strftime('%Y-%m-%d')
 			instrument_exchange = {'NSE':"NSE",'BSE':"BSE",'NFO':'NSE','BFO':'BSE','MCX':'MCX','CUR':'NSE'}
 			tradingsymbol = "NIFTY"
 			exchange = "NSE"

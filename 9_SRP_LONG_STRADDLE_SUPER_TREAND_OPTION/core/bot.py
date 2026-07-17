@@ -88,12 +88,12 @@ class TradingBot:
         trading = self.config_loader.get_trading_config()
         st_cfg = self.config_loader.get_supertrend_config()
         underlying = str(trading.get("underlying", "NIFTY"))
-        timeframe = int(st_cfg.get("timeframe_minutes", 5))
+        dhan_tf = self.config_loader.get_dhan_timeframe()
 
         spot = self.market_data.fetch_spot(underlying)
         self.state.spot_price = spot
 
-        candle = self.market_data.fetch_latest_candle(underlying, timeframe=timeframe)
+        candle = self.market_data.fetch_latest_candle(underlying, timeframe=dhan_tf)
         if candle:
             self.state.candle.open = candle.open
             self.state.candle.high = candle.high
@@ -107,7 +107,7 @@ class TradingBot:
         st_result = None
         if bool(st_cfg.get("enabled", True)):
             series = self.market_data.fetch_candle_series(
-                underlying, timeframe=timeframe
+                underlying, timeframe=dhan_tf
             )
             if series and series.closes:
                 st_result = self._st_engine.evaluate(
@@ -120,10 +120,14 @@ class TradingBot:
                 self.state.supertrend_direction = st_result.direction.value
 
         call_ltp = put_ltp = None
-        if self.state.call.custom_symbol or self.state.call.trading_symbol:
+        if self.state.call.security_id or self.state.put.security_id:
             call_ltp, put_ltp = self.market_data.fetch_option_ltps(
-                self.state.call.custom_symbol or self.state.call.trading_symbol,
-                self.state.put.custom_symbol or self.state.put.trading_symbol,
+                self.state.call.security_id,
+                self.state.put.security_id,
+                call_symbol=self.state.call.custom_symbol
+                or self.state.call.trading_symbol,
+                put_symbol=self.state.put.custom_symbol
+                or self.state.put.trading_symbol,
             )
             self._update_leg_mark(self.state.call, call_ltp)
             self._update_leg_mark(self.state.put, put_ltp)

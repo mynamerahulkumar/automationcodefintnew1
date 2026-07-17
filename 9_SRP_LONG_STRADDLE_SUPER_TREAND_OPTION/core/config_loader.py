@@ -7,14 +7,31 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from core.logger import get_logger
-from core.utils import parse_hhmm
+from core.utils import INDEX_SECURITY_IDS, parse_hhmm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 logger = get_logger()
+
+_ENV_LOADED = False
+
+
+def load_env_file(env_path: Path | None = None) -> Path | None:
+    """Load project-root .env once (does not override existing env vars)."""
+    global _ENV_LOADED
+    path = env_path or DEFAULT_ENV_PATH
+    if path.exists():
+        load_dotenv(path, override=False)
+        _ENV_LOADED = True
+        return path
+    load_dotenv(override=False)
+    _ENV_LOADED = True
+    return None
 
 
 class ConfigError(Exception):
@@ -46,22 +63,30 @@ class ConfigLoader:
 
         self._validate(raw)
         self._config = raw
+        env_path = load_env_file()
         logger.info("Configuration Loaded Successfully")
         logger.info("Configuration loaded from %s", self.config_path)
+        if env_path and env_path.exists():
+            logger.info("Credentials loaded from %s", env_path)
         return self._config
 
     def reload(self) -> dict[str, Any]:
+        global _ENV_LOADED
+        _ENV_LOADED = False
+        load_dotenv(DEFAULT_ENV_PATH, override=True)
+        _ENV_LOADED = True
         logger.info("Reloading configuration from %s", self.config_path)
         return self.load()
 
     def get_broker_credentials(self) -> tuple[str, str]:
-        broker = self.config.get("broker") or self.config.get("dhan") or {}
-        client_id = os.environ.get("DHAN_CLIENT_ID") or broker.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or broker.get("access_token", "")
+        """Return Dhan credentials from .env / environment only."""
+        load_env_file()
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
         if not client_id or not access_token:
             raise ConfigError(
-                "Dhan credentials missing. Set broker.client_id / broker.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
+                f"in {DEFAULT_ENV_PATH} (copy from .env.example)."
             )
         return str(client_id), str(access_token)
 
@@ -81,8 +106,68 @@ class ConfigLoader:
         indicator = self.config.get("indicator", {})
         return indicator.get(
             "supertrend",
-            {"enabled": True, "length": 10, "multiplier": 3, "timeframe_minutes": 5},
+            {
+                "enabled": True,
+                "length": 10,
+                "multiplier": 3,
+                "timeframe": "5m",
+                "timeframe_minutes": 5,
+            },
         )
+
+    def get_dhan_timeframe(self) -> str:
+        """
+        Map config timeframe to Dhan API interval.
+
+        Returns ``\"DAY\"`` or a minute string like ``\"5\"``.
+        """
+        st = self.get_supertrend_config()
+        raw = str(st.get("timeframe") or "").strip().lower()
+        if not raw and st.get("timeframe_minutes") is not None:
+            raw = str(st.get("timeframe_minutes")).strip().lower()
+        if raw in {"1d", "1day", "day", "daily", "d"}:
+            return "DAY"
+        raw = raw.replace("min", "").replace("m", "")
+        try:
+            minutes = int(raw)
+        except ValueError as exc:
+            raise ConfigError(
+                f"Invalid indicator.supertrend.timeframe: {st.get('timeframe')}"
+            ) from exc
+        if minutes not in {1, 2, 3, 5, 10, 15, 30, 60}:
+            raise ConfigError(
+                "indicator.supertrend.timeframe must be 1d or one of "
+                "1,2,3,5,10,15,30,60 minutes"
+            )
+        return str(minutes)
+
+    def get_underlying_instrument(self) -> dict[str, Any]:
+        """Resolve underlying security_id / segment for REST market data."""
+        trading = self.get_trading_config()
+        security = self.get_security_config()
+        underlying = str(
+            security.get("symbol") or trading.get("underlying") or "NIFTY"
+        ).upper()
+        sid = str(security.get("security_id") or "").strip()
+        if not sid:
+            mapped = INDEX_SECURITY_IDS.get(underlying)
+            if mapped is not None:
+                sid = str(mapped)
+        if not sid:
+            raise ConfigError(
+                f"security.security_id required for underlying {underlying} "
+                "(set in config.yaml for 1GB VMs)"
+            )
+        segment = str(security.get("exchange_segment") or "IDX_I").strip() or "IDX_I"
+        instrument_name = (
+            str(security.get("instrument_name") or "INDEX").strip() or "INDEX"
+        )
+        return {
+            "symbol": underlying,
+            "security_id": sid,
+            "exchange_segment": segment,
+            "instrument_name": instrument_name,
+        }
 
     def get_trading_config(self) -> dict[str, Any]:
         trading = self.config.get("trading")
@@ -140,6 +225,14 @@ class ConfigLoader:
         order = self.get_order_config()
         security = self.get_security_config()
         supertrend = self.get_supertrend_config()
+        try:
+            underlying = self.get_underlying_instrument()
+        except ConfigError:
+            underlying = {
+                "symbol": security.get("symbol") or trading.get("underlying"),
+                "security_id": security.get("security_id") or "",
+                "exchange_segment": security.get("exchange_segment") or "",
+            }
         return {
             "server": self.get_server_config(),
             "bot": {
@@ -150,7 +243,10 @@ class ConfigLoader:
                 "paper_trade": self.is_paper_trade(),
             },
             "strategy": strategy,
-            "supertrend": supertrend,
+            "supertrend": {
+                **supertrend,
+                "dhan_timeframe": self.get_dhan_timeframe(),
+            },
             "trading": {
                 "exchange": trading.get("exchange"),
                 "segment": trading.get("segment", "OPTION"),
@@ -163,10 +259,7 @@ class ConfigLoader:
             "order": order,
             "risk": risk,
             "trail": trail,
-            "security": {
-                "symbol": security.get("symbol") or trading.get("underlying"),
-                "security_id": security.get("security_id") or "",
-            },
+            "security": underlying,
         }
 
     def _validate(self, raw: dict[str, Any]) -> None:
@@ -201,11 +294,23 @@ class ConfigLoader:
                 raise ConfigError("indicator.supertrend.length must be > 0")
             if multiplier <= 0:
                 raise ConfigError("indicator.supertrend.multiplier must be > 0")
-            tf = int(st.get("timeframe_minutes", 5))
-            if tf not in {2, 3, 5, 10, 15, 30, 60}:
-                raise ConfigError(
-                    "indicator.supertrend.timeframe_minutes must be one of 2,3,5,10,15,30,60"
+            # Validate timeframe via temporary config
+            tf_raw = str(st.get("timeframe") or st.get("timeframe_minutes") or "5").lower()
+            if tf_raw not in {"1d", "1day", "day", "daily", "d"}:
+                cleaned = (
+                    tf_raw.replace("min", "").replace("m", "").strip()
                 )
+                try:
+                    minutes = int(cleaned)
+                except ValueError as exc:
+                    raise ConfigError(
+                        "indicator.supertrend.timeframe must be 1d or minute interval"
+                    ) from exc
+                if minutes not in {1, 2, 3, 5, 10, 15, 30, 60}:
+                    raise ConfigError(
+                        "indicator.supertrend.timeframe must be 1d or one of "
+                        "1,2,3,5,10,15,30,60"
+                    )
 
         bot = raw.get("bot", {})
         polling = int(bot.get("polling_interval_seconds", 30))

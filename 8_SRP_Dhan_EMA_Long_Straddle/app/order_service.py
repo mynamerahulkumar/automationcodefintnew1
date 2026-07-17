@@ -43,11 +43,11 @@ class OrderService:
         buffer = float(order_cfg.get("limit_buffer", 0.5))
         paper = self.config_loader.is_paper_trade()
 
-        call_ltp = self.market_data.fetch_ltp_for_symbol(
-            selected.call.get("custom_symbol") or selected.call["trading_symbol"]
-        )
-        put_ltp = self.market_data.fetch_ltp_for_symbol(
-            selected.put.get("custom_symbol") or selected.put["trading_symbol"]
+        call_ltp, put_ltp = self.market_data.fetch_option_ltps(
+            selected.call.get("custom_symbol") or selected.call.get("trading_symbol"),
+            selected.put.get("custom_symbol") or selected.put.get("trading_symbol"),
+            call_security_id=str(selected.call.get("security_id") or ""),
+            put_security_id=str(selected.put.get("security_id") or ""),
         )
         if call_ltp is None or put_ltp is None:
             raise OrderServiceError("Unable to fetch option LTPs for entry", status_code=502)
@@ -122,7 +122,13 @@ class OrderService:
         paper = self.config_loader.is_paper_trade()
 
         symbol = target.custom_symbol or target.trading_symbol
-        ltp = self.market_data.fetch_ltp_for_symbol(symbol or "")
+        ltp = None
+        if target.security_id:
+            ltp = self.market_data.fetch_ltp_by_security_id(
+                target.security_id,
+                "NSE_FNO",
+                label=symbol,
+            )
         if ltp is None:
             ltp = target.current_price or target.entry_price or 0.0
         sell_price = max(0.05, round(float(ltp) - buffer, 2))

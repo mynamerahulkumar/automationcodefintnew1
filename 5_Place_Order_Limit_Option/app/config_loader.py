@@ -1,4 +1,4 @@
-"""Load and validate YAML configuration."""
+"""Load and validate YAML configuration; credentials come from .env only."""
 
 from __future__ import annotations
 
@@ -7,13 +7,31 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from app.logger import get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 logger = get_logger()
+
+_ENV_LOADED = False
+
+
+def load_env_file(env_path: Path | str | None = None) -> Path | None:
+    """Load credentials and other vars from .env into os.environ (once)."""
+    global _ENV_LOADED
+    path = Path(env_path) if env_path else DEFAULT_ENV_PATH
+    if path.exists():
+        load_dotenv(path, override=False)
+        _ENV_LOADED = True
+        return path
+    if not _ENV_LOADED:
+        load_dotenv(override=False)
+        _ENV_LOADED = True
+    return path if path.exists() else None
 
 
 class ConfigError(Exception):
@@ -36,6 +54,7 @@ class ConfigLoader:
 
     def load(self) -> dict[str, Any]:
         """Load configuration from YAML file."""
+        load_env_file()
         if not self.config_path.exists():
             raise ConfigError(f"Configuration file not found: {self.config_path}")
 
@@ -51,22 +70,30 @@ class ConfigLoader:
         return self._config
 
     def reload(self) -> dict[str, Any]:
-        """Reload configuration from disk."""
+        """Reload .env and configuration from disk."""
+        global _ENV_LOADED
+        _ENV_LOADED = False
+        load_dotenv(DEFAULT_ENV_PATH, override=True)
+        _ENV_LOADED = True
         logger.info("Reloading configuration from %s", self.config_path)
         return self.load()
 
-    def get_dhan_credentials(self) -> tuple[str, str]:
-        """Return Dhan client_id and access_token with env overrides."""
-        dhan = self.config.get("dhan", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or dhan.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or dhan.get("access_token", "")
+    def get_broker_credentials(self) -> tuple[str, str]:
+        """Return Dhan client_id and access_token from .env / environment."""
+        load_env_file()
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
 
         if not client_id or not access_token:
             raise ConfigError(
-                "Dhan credentials missing. Set dhan.client_id and dhan.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
+                f"in {DEFAULT_ENV_PATH} (copy from .env.example)."
             )
         return str(client_id), str(access_token)
+
+    def get_dhan_credentials(self) -> tuple[str, str]:
+        """Alias for get_broker_credentials (backward compatible)."""
+        return self.get_broker_credentials()
 
     def get_trading_config(self) -> dict[str, Any]:
         """Return the trading section of the configuration."""

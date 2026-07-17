@@ -7,28 +7,29 @@ cd 8_SRP_Dhan_EMA_Long_Straddle
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## 2. Credentials
+## 2. Credentials (`.env` only)
 
-Set in `config/config.yaml`:
-
-```yaml
-dhan:
-  client_id: "YOUR_CLIENT_ID"
-  access_token: "YOUR_ACCESS_TOKEN"
+```env
+DHAN_CLIENT_ID=your_client_id
+DHAN_ACCESS_TOKEN=your_access_token
 ```
 
-Or export:
+Do not put tokens in `config.yaml`. After changing `.env`, restart:
 
 ```bash
-export DHAN_CLIENT_ID=...
-export DHAN_ACCESS_TOKEN=...
+python stop.py && python start.py
 ```
 
-## 3. Paper vs live
+On AWS: create `.env` on the VM, `chmod 600 .env`.
 
-Default config uses `bot.paper_trade: true`. Set to `false` only after static IP whitelisting and a successful paper dry-run.
+## 3. Config
+
+- `security.security_id: "13"` for NIFTY (required on 1GB hosts)
+- `ema.timeframe: 5m` (or `1d` to match daily charts)
+- `bot.paper_trade: true` until dry-run succeeds
 
 ## 4. Run
 
@@ -36,6 +37,13 @@ Default config uses `bot.paper_trade: true`. Set to `false` only after static IP
 python start.py
 ```
 
-Stop with `python stop.py`. Tail logs with `python logs.py`.
-
 API: `http://127.0.0.1:7003/status`
+
+## 5. Common errors
+
+| Console message | Fix |
+|-----------------|-----|
+| DH-901 | Refresh `DHAN_ACCESS_TOKEN` in `.env` |
+| DH-902 | Enable Dhan Data APIs |
+| MemoryError | Keep `security_id`; avoid CSV on poll |
+| `_super_order` / invalid syntax | Python 3.10+ or `pip install 'dhanhq==2.0.2'` |

@@ -9,10 +9,6 @@ bot:
   show_last_polls: 3
   paper_trade: true
 
-broker:
-  client_id: ""
-  access_token: ""
-
 strategy:
   name: Long Straddle Supertrend Confirmation
   entry_time: "09:15"
@@ -23,7 +19,7 @@ indicator:
     enabled: true
     length: 10
     multiplier: 3
-    timeframe_minutes: 5
+    timeframe: 5m
 
 trading:
   exchange: NSE
@@ -56,7 +52,9 @@ trail:
 
 security:
   symbol: NIFTY
-  security_id:
+  security_id: "13"
+  exchange_segment: IDX_I
+  instrument_name: INDEX
 
 logging:
   level: INFO

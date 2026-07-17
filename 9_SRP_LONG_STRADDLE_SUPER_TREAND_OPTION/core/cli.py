@@ -7,8 +7,14 @@ from typing import Any
 from core.utils import format_money
 
 
-def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNNING") -> str:
+def build_startup_banner(
+    config_summary: dict[str, Any],
+    bot_status: str = "RUNNING",
+    python_version: str | None = None,
+) -> str:
     """Return the startup configuration banner."""
+    import sys
+
     strategy = config_summary.get("strategy", {})
     trading = config_summary.get("trading", {})
     option_sel = config_summary.get("strike_selection", {})
@@ -18,6 +24,8 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
     bot = config_summary.get("bot", {})
     server = config_summary.get("server", {})
     st = config_summary.get("supertrend", {})
+    security = config_summary.get("security", {})
+    py_ver = python_version or sys.version.split()[0]
 
     trail_label = "Disabled"
     if trail.get("enabled", True):
@@ -42,6 +50,10 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "",
         bot_status,
         "",
+        "Python",
+        "",
+        py_ver,
+        "",
         "Broker",
         "",
         "Dhan",
@@ -57,6 +69,10 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "Underlying",
         "",
         str(trading.get("underlying", "")),
+        "",
+        "Security ID",
+        "",
+        str(security.get("security_id") or "-"),
         "",
         "Expiry",
         "",
@@ -93,6 +109,10 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "Multiplier",
         "",
         str(st.get("multiplier", 3)),
+        "",
+        "Timeframe",
+        "",
+        str(st.get("timeframe") or st.get("dhan_timeframe") or "5m"),
         "",
         "Entry Time",
         "",

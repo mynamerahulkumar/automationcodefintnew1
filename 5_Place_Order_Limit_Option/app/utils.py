@@ -13,7 +13,6 @@ SECURITY_MASTER_PATH = PROJECT_ROOT / "security_id" / "api-scrip-master.csv"
 
 logger = get_logger()
 
-_EQUITY_INDEX: dict[tuple[str, str], dict[str, Any]] | None = None
 _OPTION_CACHE: dict[tuple[str, str, str, float, str], dict[str, Any]] = {}
 
 
@@ -33,39 +32,39 @@ def _exchange_segment(exchange: str, segment: str) -> str:
     raise ValueError(f"Unsupported segment: {segment}")
 
 
-def _build_equity_index() -> dict[tuple[str, str], dict[str, Any]]:
-    """Stream CSV once and build a compact equity symbol index."""
-    global _EQUITY_INDEX
-    if _EQUITY_INDEX is not None:
-        return _EQUITY_INDEX
+def _lookup_equity_from_csv(stock_name: str, exchange: str) -> dict[str, Any]:
+    """
+    Stream api-scrip-master.csv until the first matching equity row.
 
+    Avoids loading the full ~20k-symbol index into memory (important on 1GB hosts).
+    """
     if not SECURITY_MASTER_PATH.exists():
         raise FileNotFoundError(f"Security master not found: {SECURITY_MASTER_PATH}")
 
-    index: dict[tuple[str, str], dict[str, Any]] = {}
-    logger.info("Building equity index from %s", SECURITY_MASTER_PATH)
+    exchange_upper = exchange.upper()
+    symbol_upper = stock_name.upper().strip()
+    logger.info(
+        "Streaming CSV lookup for %s on %s (low-memory mode)",
+        symbol_upper,
+        exchange_upper,
+    )
 
     with open(SECURITY_MASTER_PATH, encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             if row.get("SEM_INSTRUMENT_NAME") != "EQUITY":
                 continue
-            exchange = str(row.get("SEM_EXM_EXCH_ID", "")).upper()
-            symbol = str(row.get("SEM_TRADING_SYMBOL", "")).upper()
-            if not exchange or not symbol:
+            if str(row.get("SEM_EXM_EXCH_ID", "")).upper() != exchange_upper:
                 continue
-            key = (exchange, symbol)
-            if key in index:
+            if str(row.get("SEM_TRADING_SYMBOL", "")).upper() != symbol_upper:
                 continue
-            index[key] = {
+            return {
                 "security_id": str(row["SEM_SMST_SECURITY_ID"]),
                 "trading_symbol": str(row["SEM_TRADING_SYMBOL"]),
-                "exchange_segment": _exchange_segment(exchange, "EQUITY"),
+                "exchange_segment": _exchange_segment(exchange_upper, "EQUITY"),
                 "instrument_name": "EQUITY",
             }
 
-    _EQUITY_INDEX = index
-    logger.info("Equity index ready with %s symbols", len(index))
-    return index
+    raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
 
 
 def resolve_equity_security(
@@ -73,25 +72,26 @@ def resolve_equity_security(
     exchange: str = "NSE",
     security_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve an equity security from stock name or explicit security_id."""
-    exchange_segment = _exchange_segment(exchange, "EQUITY")
+    """
+    Resolve an equity security.
 
-    if security_id:
+    Prefer non-blank config security_id and skip CSV entirely (low RAM).
+    If config ID is missing, stream CSV for a single-symbol match.
+    """
+    exchange_segment = _exchange_segment(exchange, "EQUITY")
+    config_id = str(security_id).strip() if security_id else ""
+
+    if config_id:
         return {
-            "security_id": str(security_id),
+            "security_id": config_id,
             "trading_symbol": stock_name.upper(),
             "exchange_segment": exchange_segment,
             "instrument_name": "EQUITY",
         }
 
-    index = _build_equity_index()
-    key = (exchange.upper(), stock_name.upper().strip())
-    resolved = index.get(key)
-    if resolved is None:
-        raise ValueError(f"Security ID not found for stock: {stock_name} on {exchange}")
-
+    resolved = _lookup_equity_from_csv(stock_name, exchange)
     logger.info("Resolved equity %s -> security_id %s", stock_name, resolved["security_id"])
-    return resolved.copy()
+    return resolved
 
 
 def resolve_option_security(

@@ -17,6 +17,16 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
     bot = config_summary.get("bot", {})
     server = config_summary.get("server", {})
     ema = config_summary.get("ema", {})
+    security = config_summary.get("security", {})
+    ema_label = (
+        f"{ema.get('fast', 9)} / {ema.get('slow', 21)} "
+        f"({ema.get('timeframe') or ema.get('dhan_timeframe') or '5m'})"
+    )
+    trailing = (
+        f"Enabled ({risk.get('trailing_percent', '')}%)"
+        if risk.get("trailing_enabled", True)
+        else "Disabled"
+    )
 
     lines = [
         "=" * 56,
@@ -59,7 +69,7 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "",
         "EMA",
         "",
-        f"{ema.get('fast', 9)} / {ema.get('slow', 21)}",
+        ema_label,
         "",
         "Entry Time",
         "",
@@ -83,11 +93,7 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "",
         "Trailing",
         "",
-        (
-            f"Enabled ({risk.get('trailing_percent', '')}%)"
-            if risk.get("trailing_enabled", True)
-            else "Disabled"
-        ),
+        trailing,
         "",
         "Polling Interval",
         "",
@@ -96,6 +102,10 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "Server Port",
         "",
         str(server.get("port", 7003)),
+        "",
+        "Security ID",
+        "",
+        str(security.get("security_id") or "-"),
         "",
         "Log File",
         "",

@@ -2,10 +2,10 @@
 
 ## Requirements
 
-- Python 3.10+ recommended (3.9+ minimum)
-- Dhan API credentials (client id + access token)
+- Python 3.10+ recommended (3.9+ can poll via REST; live orders need 3.10+ or `dhanhq==2.0.2`)
+- Dhan API credentials in `.env`
 - Static IP whitelisted on Dhan for order APIs
-- Active Dhan data plan for LTP / intraday candles / option chain
+- Active Dhan data plan for LTP / intraday candles
 
 ## Install (macOS / Linux)
 
@@ -15,6 +15,14 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+DHAN_CLIENT_ID=YOUR_CLIENT_ID
+DHAN_ACCESS_TOKEN=YOUR_ACCESS_TOKEN
 ```
 
 ## Install (Windows)
@@ -25,56 +33,37 @@ python -m venv venv
 venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
+copy .env.example .env
 ```
 
 ## Configure
 
-1. Edit `config/config.yaml`
-2. Set credentials:
+1. Credentials: **only** in `.env` (never in `config.yaml`)
+2. Keep underlying security id set for 1GB hosts:
 
 ```yaml
-dhan:
-  client_id: "YOUR_CLIENT_ID"
-  access_token: "YOUR_ACCESS_TOKEN"
+security:
+  symbol: NIFTY
+  security_id: "13"
 ```
 
-Or export environment variables (preferred for servers):
-
-```bash
-export DHAN_CLIENT_ID="YOUR_CLIENT_ID"
-export DHAN_ACCESS_TOKEN="YOUR_ACCESS_TOKEN"
-```
-
-3. Review strategy / risk:
+3. Prefer paper mode first:
 
 ```yaml
-trading:
-  underlying: NIFTY
-  expiry: WEEKLY
-  quantity: 75
-
 bot:
-  paper_trade: true    # start in paper mode first
+  paper_trade: true
   polling_interval_seconds: 30
 ```
-
-4. Ensure `security_id/api-scrip-master.csv` is present (already included).
 
 ## Run
 
 ```bash
 python start.py
+python logs.py
+python stop.py
 ```
 
-- Starts FastAPI on `0.0.0.0:7003`
-- Kills any previous instance using `run/bot.pid`
-- Prints the full configuration banner
-- Streams a few live poll dashboards, then leaves the bot running
-
-```bash
-python logs.py      # live tail of logs/bot.log
-python stop.py      # square-off open legs + stop process
-```
+`start.py` prints Python version and maps common failures (DH-901, OOM, dhanhq syntax) to clear `ERROR:` lines.
 
 ## Verify
 
@@ -86,34 +75,20 @@ curl http://127.0.0.1:7003/config
 
 ## AWS Lightsail / EC2 (1 GB)
 
-1. Install Python + venv as above
-2. Prefer env vars for credentials
-3. Run under `tmux` / `screen` or a systemd service:
-
-```ini
-[Unit]
-Description=SRP Long Straddle ORB Bot
-After=network.target
-
-[Service]
-WorkingDirectory=/path/to/7_SRP_Dhan_ORB_Long_Straddle
-ExecStart=/path/to/venv/bin/python start.py
-Restart=on-failure
-Environment=DHAN_CLIENT_ID=...
-Environment=DHAN_ACCESS_TOKEN=...
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Keep `bot.paper_trade: true` until you confirm strike selection, ORB levels, and exits on a market day.
+1. Create `.env` on the VM (`chmod 600 .env`)
+2. Confirm `python3 --version`
+   - **&lt; 3.10**: REST polling OK; for orders upgrade Python or `pip install 'dhanhq==2.0.2'`
+   - **≥ 3.10**: full stack OK
+3. Keep `security.security_id` set so order client skips loading the instrument CSV into pandas
+4. Restart after token refresh: `python stop.py && python start.py`
 
 ## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
-| Credentials missing | Set `dhan.*` or `DHAN_*` env vars |
-| Option not found | Refresh `api-scrip-master.csv`; check expiry / strike |
-| Port in use | `python stop.py` then restart |
-| Empty LTP / candles | Confirm Dhan data plan and market hours |
-| Duplicate bots | `start.py` auto-kills prior PID; check `run/bot.pid` |
+| Credentials missing | Copy `.env.example` → `.env` and set both vars |
+| DH-901 / Invalid Authentication | Refresh `DHAN_ACCESS_TOKEN` in `.env`, restart |
+| DH-902 | Subscribe to Dhan Data APIs |
+| `invalid syntax (_super_order.py)` | Use Python 3.10+ or pin `dhanhq==2.0.2`; polls already use REST |
+| MemoryError | Keep `security.security_id`; do not force full CSV into pandas |
+| Option not found | Refresh `api-scrip-master.csv`; check weekly expiry / strike |

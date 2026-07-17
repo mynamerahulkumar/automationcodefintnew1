@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.config_loader import ConfigLoader, get_config_loader
-from core.dhan_client import get_dhan_client
 from core.instrument_lookup import (
     get_underlying_security_id,
     resolve_expiry,
     resolve_option_security,
 )
 from core.logger import get_logger
+from core.market_data import get_market_data_service
 from core.utils import INDEX_STEP
 
 logger = get_logger()
@@ -35,10 +35,11 @@ class SelectedStraddle:
 
 
 class OptionSelector:
-    """Selects CE/PE contracts using Dhan_SRP helpers + CSV security IDs."""
+    """Selects CE/PE via REST spot + arithmetic ATM + CSV security IDs."""
 
     def __init__(self, config_loader: ConfigLoader | None = None) -> None:
         self.config_loader = config_loader or get_config_loader()
+        self.market_data = get_market_data_service()
 
     def select(self) -> SelectedStraddle:
         trading = self.config_loader.get_trading_config()
@@ -52,25 +53,21 @@ class OptionSelector:
         offset = int(option_sel.get("offset", option_sel.get("strike_offset", 0)))
 
         expiry = resolve_expiry(expiry_cfg, underlying, exchange)
-        under_sid = get_underlying_security_id(
+        _ = get_underlying_security_id(
             underlying, security_cfg.get("security_id") or None
         )
 
-        dhan = get_dhan_client(self.config_loader)
-        spot = self._fetch_spot(dhan, underlying)
-        step = INDEX_STEP.get(underlying, 50)
-        atm_strike = round(spot / step) * step
+        spot = self.market_data.fetch_spot(underlying)
+        if spot is None or spot <= 0:
+            raise ValueError(f"Unable to fetch spot LTP for {underlying}")
 
+        step = INDEX_STEP.get(underlying, 50)
+        atm_strike = float(round(spot / step) * step)
         call_strike, put_strike = self._strikes_for_selection(
-            dhan=dhan,
-            underlying=underlying,
-            under_sid=under_sid,
-            expiry=expiry,
             sel_type=sel_type,
             offset=offset,
             atm_strike=atm_strike,
             step=step,
-            spot=spot,
         )
 
         call = resolve_option_security(
@@ -103,7 +100,7 @@ class OptionSelector:
         return SelectedStraddle(
             underlying=underlying,
             expiry=expiry,
-            spot=spot,
+            spot=float(spot),
             atm_strike=float(atm_strike),
             call_strike=float(call_strike),
             put_strike=float(put_strike),
@@ -113,58 +110,15 @@ class OptionSelector:
             strike_offset=offset,
         )
 
-    def _fetch_spot(self, dhan: Any, underlying: str) -> float:
-        ltp_data = dhan.get_ltp_data(underlying)
-        if isinstance(ltp_data, dict):
-            for key, value in ltp_data.items():
-                if str(key).upper() == underlying.upper() and isinstance(
-                    value, (int, float)
-                ):
-                    return float(value)
-            for value in ltp_data.values():
-                if isinstance(value, (int, float)) and value > 0:
-                    return float(value)
-        raise ValueError(f"Unable to fetch spot LTP for {underlying}")
-
+    @staticmethod
     def _strikes_for_selection(
-        self,
         *,
-        dhan: Any,
-        underlying: str,
-        under_sid: int,
-        expiry: str,
         sel_type: str,
         offset: int,
         atm_strike: float,
         step: int,
-        spot: float,
     ) -> tuple[float, float]:
-        """Return (call_strike, put_strike). Prefer Dhan helpers; fall back to arithmetic."""
-        _ = under_sid, expiry, spot
-        expiry_index = 0
-        try:
-            if sel_type == "ATM" or offset == 0:
-                result = dhan.ATM_Strike_Selection(underlying, expiry_index)
-            elif sel_type == "OTM":
-                result = dhan.OTM_Strike_Selection(
-                    underlying, expiry_index, OTM_count=max(1, offset)
-                )
-            else:
-                result = dhan.ITM_Strike_Selection(
-                    underlying, expiry_index, ITM_count=max(1, offset)
-                )
-
-            if result and result[0] is not None and result[2] is not None:
-                if sel_type == "ATM" or offset == 0:
-                    strike = float(result[2])
-                    return strike, strike
-                strike = float(result[2])
-                if sel_type == "OTM":
-                    return strike + offset * step, strike - offset * step
-                return strike - offset * step, strike + offset * step
-        except Exception as exc:
-            logger.warning("Dhan strike helper failed (%s); using arithmetic strikes", exc)
-
+        """Return (call_strike, put_strike) using arithmetic only (no Dhan_SRP)."""
         if sel_type == "ATM" or offset == 0:
             return atm_strike, atm_strike
         if sel_type == "OTM":

@@ -88,10 +88,10 @@ class TradingBot:
                 self.state.spot_price = spot
 
         call_ltp = put_ltp = None
-        if self.state.call.custom_symbol or self.state.call.trading_symbol:
+        if self.state.call.security_id or self.state.put.security_id:
             call_ltp, put_ltp = self.market_data.fetch_option_ltps(
-                self.state.call.custom_symbol or self.state.call.trading_symbol,
-                self.state.put.custom_symbol or self.state.put.trading_symbol,
+                self.state.call.security_id,
+                self.state.put.security_id,
             )
             self._update_leg_mark(self.state.call, call_ltp)
             self._update_leg_mark(self.state.put, put_ltp)
@@ -116,8 +116,12 @@ class TradingBot:
             logger.error("Order error: %s", exc.message)
             self.state.set_error(exc.message)
         except Exception as exc:
-            logger.exception("Poll cycle failed")
-            self.state.set_error(str(exc))
+            logger.error(
+                "Unhandled error in poll cycle: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            self.state.set_error(f"{type(exc).__name__}: {exc}")
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         next_poll = (now + timedelta(seconds=self.state.poll_interval)).isoformat()

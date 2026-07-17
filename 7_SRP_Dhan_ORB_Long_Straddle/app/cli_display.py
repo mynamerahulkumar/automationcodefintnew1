@@ -7,8 +7,14 @@ from typing import Any
 from app.utils import format_money
 
 
-def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNNING") -> str:
+def build_startup_banner(
+    config_summary: dict[str, Any],
+    bot_status: str = "RUNNING",
+    python_version: str | None = None,
+) -> str:
     """Return the startup configuration banner."""
+    import sys
+
     strategy = config_summary.get("strategy", {})
     trading = config_summary.get("trading", {})
     option_sel = config_summary.get("option_selection", {})
@@ -16,6 +22,8 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
     risk = config_summary.get("risk", {})
     bot = config_summary.get("bot", {})
     server = config_summary.get("server", {})
+    security = config_summary.get("security", {})
+    py_ver = python_version or sys.version.split()[0]
 
     lines = [
         "=" * 56,
@@ -35,6 +43,10 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "Underlying",
         "",
         str(trading.get("underlying", "")),
+        "",
+        "Underlying Security ID",
+        "",
+        str(security.get("security_id") or "-"),
         "",
         "Expiry",
         "",
@@ -92,13 +104,31 @@ def build_startup_banner(config_summary: dict[str, Any], bot_status: str = "RUNN
         "",
         "YES" if bot.get("paper_trade") else "NO",
         "",
-        "=" * 56,
+        "Python",
         "",
-        "BOT STARTED SUCCESSFULLY",
-        "",
-        "=" * 56,
+        py_ver,
     ]
+    if sys.version_info < (3, 10):
+        lines.extend(
+            [
+                "",
+                "Note",
+                "",
+                "Python <3.10 — market data uses REST; upgrade to 3.10+ for live orders (dhanhq 2.2)",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "=" * 56,
+            "",
+            "BOT STARTED SUCCESSFULLY",
+            "",
+            "=" * 56,
+        ]
+    )
     return "\n".join(lines)
+
 
 
 def build_poll_dashboard(snapshot: dict[str, Any]) -> str:

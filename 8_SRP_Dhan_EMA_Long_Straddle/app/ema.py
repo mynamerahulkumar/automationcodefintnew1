@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -40,20 +41,31 @@ class EmaResult:
 
 
 def compute_ema_series(prices: list[float], period: int) -> list[float]:
-    """Compute EMA series using the incremental formula."""
-    if not prices or period <= 0:
+    """
+    Compute EMA series using TradingView-style SMA seed.
+
+    First ``period`` closes form an SMA seed; subsequent values use the
+    standard EMA formula. Early bars before the seed are left as NaN so
+    the series stays aligned with ``prices``.
+    """
+    if not prices or period <= 0 or len(prices) < period:
         return []
 
     k = 2.0 / (period + 1)
-    ema_values: list[float] = []
-    ema = prices[0]
+    ema_values: list[float] = [float("nan")] * (period - 1)
+
+    ema = sum(prices[:period]) / float(period)
     ema_values.append(ema)
 
-    for price in prices[1:]:
-        ema = price * k + ema * (1.0 - k)
+    for price in prices[period:]:
+        ema = float(price) * k + ema * (1.0 - k)
         ema_values.append(ema)
 
     return ema_values
+
+
+def _finite(value: float | None) -> bool:
+    return value is not None and not math.isnan(value) and math.isfinite(value)
 
 
 class EmaEngine:
@@ -75,9 +87,25 @@ class EmaEngine:
 
         fast_series = compute_ema_series(closes, self.fast)
         slow_series = compute_ema_series(closes, self.slow)
+        if not fast_series or not slow_series:
+            return EmaResult(candle_time=last_timestamp)
 
-        fast_prev, fast_curr = fast_series[-2], fast_series[-1]
-        slow_prev, slow_curr = slow_series[-2], slow_series[-1]
+        # Walk back to find two finite pairs (skip SMA-seed padding NaNs).
+        pairs: list[tuple[float, float]] = []
+        for i in range(len(closes) - 1, -1, -1):
+            if i >= len(fast_series) or i >= len(slow_series):
+                continue
+            f_val, s_val = fast_series[i], slow_series[i]
+            if _finite(f_val) and _finite(s_val):
+                pairs.append((float(f_val), float(s_val)))
+            if len(pairs) >= 2:
+                break
+
+        if len(pairs) < 2:
+            return EmaResult(candle_time=last_timestamp)
+
+        fast_curr, slow_curr = pairs[0]
+        fast_prev, slow_prev = pairs[1]
 
         if fast_curr > slow_curr:
             trend = EmaTrend.BULLISH

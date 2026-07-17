@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from app.logger import get_logger
 from app.utils import parse_hhmm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 logger = get_logger()
+
+
+def _load_env(path: Path | None = None) -> None:
+    env_path = path or DEFAULT_ENV_PATH
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+    else:
+        load_dotenv(override=False)
 
 
 class ConfigError(Exception):
@@ -27,6 +38,7 @@ class ConfigLoader:
     def __init__(self, config_path: Path | str | None = None) -> None:
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._config: dict[str, Any] = {}
+        _load_env()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -35,6 +47,7 @@ class ConfigLoader:
         return self._config
 
     def load(self) -> dict[str, Any]:
+        _load_env()
         if not self.config_path.exists():
             raise ConfigError(f"Configuration file not found: {self.config_path}")
 
@@ -51,18 +64,19 @@ class ConfigLoader:
 
     def reload(self) -> dict[str, Any]:
         logger.info("Reloading configuration from %s", self.config_path)
+        _load_env(DEFAULT_ENV_PATH)
+        load_dotenv(DEFAULT_ENV_PATH, override=True)
         return self.load()
 
     def get_broker_credentials(self) -> tuple[str, str]:
-        dhan = self.config.get("dhan", {})
-        client_id = os.environ.get("DHAN_CLIENT_ID") or dhan.get("client_id", "")
-        access_token = os.environ.get("DHAN_ACCESS_TOKEN") or dhan.get("access_token", "")
+        _load_env()
+        client_id = (os.environ.get("DHAN_CLIENT_ID") or "").strip()
+        access_token = (os.environ.get("DHAN_ACCESS_TOKEN") or "").strip()
         if not client_id or not access_token:
             raise ConfigError(
-                "Dhan credentials missing. Set dhan.client_id / dhan.access_token "
-                "in config or DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars."
+                "Broker credentials missing. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env"
             )
-        return str(client_id), str(access_token)
+        return client_id, access_token
 
     def get_server_config(self) -> dict[str, Any]:
         return self.config.get("server", {"host": "0.0.0.0", "port": 7003})
@@ -79,8 +93,49 @@ class ConfigLoader:
     def get_ema_config(self) -> dict[str, Any]:
         return self.config.get(
             "ema",
-            {"enabled": True, "fast": 9, "slow": 21, "timeframe_minutes": 5},
+            {"enabled": True, "fast": 9, "slow": 21, "timeframe": "5m"},
         )
+
+    def parse_timeframe_minutes(self) -> int:
+        ema = self.get_ema_config()
+        raw = str(ema.get("timeframe") or ema.get("timeframe_minutes") or "5m").strip().lower()
+        if raw.isdigit():
+            return int(raw)
+        match = re.fullmatch(r"(\d+)\s*([a-z]+)", raw)
+        if not match:
+            raise ConfigError(f"Invalid ema.timeframe: {raw}")
+        value = int(match.group(1))
+        unit = match.group(2)
+        if unit in {"m", "min", "mins", "minute", "minutes"}:
+            return value
+        if unit in {"h", "hr", "hour", "hours"}:
+            return value * 60
+        if unit in {"d", "day", "days"}:
+            return value * 1440
+        raise ConfigError(f"Invalid ema.timeframe unit: {raw}")
+
+    def get_dhan_timeframe(self) -> str:
+        """Return Dhan interval: '1'|'5'|'15'|'25'|'60' or 'DAY'."""
+        minutes = self.parse_timeframe_minutes()
+        if minutes >= 1440:
+            return "DAY"
+        supported = {1, 5, 15, 25, 60}
+        # Map common 2/3/10/30 to nearest supported REST interval.
+        if minutes not in supported:
+            if minutes in {2, 3}:
+                return "1"
+            if minutes == 10:
+                return "5"
+            if minutes == 30:
+                return "25"
+            raise ConfigError(
+                f"Unsupported timeframe minutes={minutes}; "
+                f"use one of {sorted(supported)}m or 1d"
+            )
+        return str(minutes)
+
+    def is_daily_timeframe(self) -> bool:
+        return self.get_dhan_timeframe() == "DAY"
 
     def get_trading_config(self) -> dict[str, Any]:
         trading = self.config.get("trading")
@@ -124,7 +179,8 @@ class ConfigLoader:
         option_sel = self.get_option_selection()
         order = self.get_order_config()
         security = self.get_security_config()
-        ema = self.get_ema_config()
+        ema = dict(self.get_ema_config())
+        ema["dhan_timeframe"] = self.get_dhan_timeframe()
         return {
             "server": self.get_server_config(),
             "bot": {
@@ -184,9 +240,27 @@ class ConfigLoader:
                 raise ConfigError("ema.fast and ema.slow must be > 0")
             if fast >= slow:
                 raise ConfigError("ema.fast must be less than ema.slow")
-            tf = int(ema.get("timeframe_minutes", 5))
-            if tf not in {2, 3, 5, 10, 15, 30, 60}:
-                raise ConfigError("ema.timeframe_minutes must be one of 2,3,5,10,15,30,60")
+            raw_tf = str(ema.get("timeframe") or ema.get("timeframe_minutes") or "5m").strip().lower()
+            if raw_tf.isdigit():
+                minutes = int(raw_tf)
+            else:
+                match = re.fullmatch(r"(\d+)\s*([a-z]+)", raw_tf)
+                if not match:
+                    raise ConfigError(f"Invalid ema.timeframe: {raw_tf}")
+                value = int(match.group(1))
+                unit = match.group(2)
+                if unit in {"m", "min", "mins", "minute", "minutes"}:
+                    minutes = value
+                elif unit in {"h", "hr", "hour", "hours"}:
+                    minutes = value * 60
+                elif unit in {"d", "day", "days"}:
+                    minutes = value * 1440
+                else:
+                    raise ConfigError(f"Invalid ema.timeframe unit: {raw_tf}")
+            if minutes < 1440 and minutes not in {1, 2, 3, 5, 10, 15, 25, 30, 60}:
+                raise ConfigError(
+                    f"Unsupported ema.timeframe minutes={minutes}; use 1/5/15/25/60m or 1d"
+                )
 
         bot = raw.get("bot", {})
         polling = int(bot.get("polling_interval_seconds", 30))
