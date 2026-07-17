@@ -23,7 +23,7 @@ polling:
 market_hours:
   enabled: true
   open: "09:20"
-  close: "15:30"
+  close: "15:25"
 
 ema:
   enabled: true

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, time
+from datetime import datetime, timedelta, time, timezone
 
 try:
     from zoneinfo import ZoneInfo
@@ -55,3 +55,57 @@ def is_market_open(
     close_t = parse_hhmm(close_hhmm)
     clock = current.time().replace(second=0, microsecond=0)
     return open_t <= clock < close_t
+
+
+def _combine_ist(day: datetime, hhmm: str) -> datetime:
+    """Build an IST datetime on ``day``'s calendar date at ``hhmm``."""
+    t = parse_hhmm(hhmm)
+    naive = datetime(day.year, day.month, day.day, t.hour, t.minute)
+    try:
+        return IST.localize(naive)  # pytz
+    except AttributeError:
+        return naive.replace(tzinfo=IST)
+
+
+def next_market_open(
+    open_hhmm: str = "09:15",
+    close_hhmm: str = "15:30",
+    now: datetime | None = None,
+) -> datetime:
+    """Return the next session open datetime in IST."""
+    current = ist_now(now)
+    open_t = parse_hhmm(open_hhmm)
+    if is_market_open(open_hhmm, close_hhmm, current):
+        candidate = current + timedelta(days=1)
+    elif current.weekday() < 5 and current.time().replace(
+        second=0, microsecond=0
+    ) < open_t:
+        candidate = current
+    else:
+        candidate = current + timedelta(days=1)
+
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return _combine_ist(candidate, open_hhmm)
+
+
+def session_status_message(
+    open_hhmm: str = "09:15",
+    close_hhmm: str = "15:30",
+    now: datetime | None = None,
+) -> str:
+    """Human-readable open/closed status with IST (and UTC) clocks."""
+    current = ist_now(now)
+    ist_label = current.strftime("%a %Y-%m-%d %H:%M IST")
+    utc_label = current.astimezone(timezone.utc).strftime("%H:%M UTC")
+    if is_market_open(open_hhmm, close_hhmm, current):
+        return (
+            f"Market OPEN ({open_hhmm}–{close_hhmm} IST). "
+            f"Now {ist_label} ({utc_label})."
+        )
+    nxt = next_market_open(open_hhmm, close_hhmm, current)
+    return (
+        f"Market CLOSED ({open_hhmm}–{close_hhmm} IST, Mon–Fri). "
+        f"Now {ist_label} ({utc_label}). "
+        f"Next open {nxt.strftime('%a %Y-%m-%d %H:%M IST')}."
+    )

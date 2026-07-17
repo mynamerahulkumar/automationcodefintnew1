@@ -87,6 +87,14 @@ def print_startup_banner(loader) -> None:
     hours = loader.get_market_hours_config()
     if hours["enabled"]:
         print(f"Market Hours     : ON ({hours['open']}–{hours['close']} IST)")
+        from core.market_hours import is_market_open, session_status_message
+
+        print(f"Session          : {session_status_message(hours['open'], hours['close'])}")
+        if not is_market_open(hours["open"], hours["close"]):
+            print(
+                "Note             : Times are IST (UTC+5:30), not AWS VM UTC. "
+                "Bot waits until open; process stays running."
+            )
     else:
         print("Market Hours     : OFF")
     print(f"Python           : {sys.version.split()[0]}")
@@ -379,11 +387,27 @@ def main() -> None:
             print("Warning: Server did not respond in time — skipping startup log stream.")
         else:
             print(f"Health check OK: {HEALTH_URL}")
-            timeout = max(
-                polling_seconds * startup_poll_logs + 120,
-                polling_seconds * 2 + 60,
-            )
-            stream_startup_poll_logs(startup_poll_logs, timeout)
+            hours = loader.get_market_hours_config()
+            from core.market_hours import is_market_open, session_status_message
+
+            if hours["enabled"] and not is_market_open(hours["open"], hours["close"]):
+                print()
+                print("=" * 55)
+                print(session_status_message(hours["open"], hours["close"]))
+                print(
+                    "No live polls until market open — bot is running in background "
+                    "and will start trade lookup at session open."
+                )
+                print(f"Tail logs:  python logs.py")
+                print(f"Stop bot:   python stop.py")
+                print(f"Log file:   {LOG_FILE}")
+                print("=" * 55)
+            else:
+                timeout = max(
+                    polling_seconds * startup_poll_logs + 120,
+                    polling_seconds * 2 + 60,
+                )
+                stream_startup_poll_logs(startup_poll_logs, timeout)
     else:
         if wait_for_server():
             print(f"Health check OK: {HEALTH_URL}")

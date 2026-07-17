@@ -14,7 +14,7 @@ from colorama import Fore, Style, init as colorama_init
 from core.config_loader import ConfigLoader, get_config_loader
 from core.logger import get_logger
 from core.market_data import get_market_data_service
-from core.market_hours import is_market_open
+from core.market_hours import is_market_open, session_status_message
 from core.order_manager import OrderManagerError, get_order_manager
 from core.strategy import Signal, generate_signal
 
@@ -415,10 +415,8 @@ class SignalEngine:
             self.state.clear_error()
             if not self._waiting_for_market_open:
                 logger.info(
-                    "Outside market hours (%s–%s IST, Mon–Fri) — "
-                    "skipping trade lookup until session open",
-                    hours["open"],
-                    hours["close"],
+                    "Outside market hours — %s Skipping trade lookup until session open.",
+                    session_status_message(hours["open"], hours["close"]),
                 )
                 self._waiting_for_market_open = True
             return
