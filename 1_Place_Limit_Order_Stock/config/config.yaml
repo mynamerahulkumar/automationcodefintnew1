@@ -1,8 +1,8 @@
 trading:
   segment: EQUITY
   exchange: NSE
-  stock_name: HDFCBANK
-  security_id: ""
+  stock_name: BANKNIFTY-Aug2026-31000-CE
+  security_id: "35564"
   quantity: 1
   product_type: INTRADAY
   transaction_type: BUY
