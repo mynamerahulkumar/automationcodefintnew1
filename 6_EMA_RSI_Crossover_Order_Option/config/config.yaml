@@ -20,6 +20,11 @@ polling:
   seconds: 30
   startup_poll_logs: 3
 
+market_hours:
+  enabled: true
+  open: "09:20"
+  close: "15:30"
+
 ema:
   enabled: true
   fast: 9

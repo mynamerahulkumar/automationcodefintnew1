@@ -84,6 +84,11 @@ def print_startup_banner(loader) -> None:
     print(f"Stop Loss        : {risk.get('stop_loss_percent')}%")
     print(f"Polling          : {polling} Seconds")
     print(f"Startup Polls    : {startup_poll_logs}")
+    hours = loader.get_market_hours_config()
+    if hours["enabled"]:
+        print(f"Market Hours     : ON ({hours['open']}–{hours['close']} IST)")
+    else:
+        print("Market Hours     : OFF")
     print(f"Python           : {sys.version.split()[0]}")
     if sys.version_info < (3, 10):
         print(

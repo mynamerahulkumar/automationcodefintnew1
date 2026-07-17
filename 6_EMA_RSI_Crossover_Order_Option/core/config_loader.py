@@ -437,6 +437,17 @@ class ConfigLoader:
         polling = self.config.get("polling", {})
         return int(polling.get("startup_poll_logs", 3))
 
+    def get_market_hours_config(self) -> dict[str, Any]:
+        """Return market-hours gate settings (defaults: disabled)."""
+        section = self.config.get("market_hours") or {}
+        if not isinstance(section, dict):
+            section = {}
+        return {
+            "enabled": bool(section.get("enabled", False)),
+            "open": str(section.get("open", "09:15")).strip() or "09:15",
+            "close": str(section.get("close", "15:30")).strip() or "15:30",
+        }
+
     def parse_timeframe_minutes(self) -> int:
         """Convert strategy.timeframe (e.g. 5m, 1d) to minutes."""
         raw = str(self.get_strategy_config().get("timeframe", "5m")).strip()
@@ -543,6 +554,7 @@ class ConfigLoader:
             "risk": risk,
             "polling_seconds": self.get_polling_seconds(),
             "startup_poll_logs": self.get_startup_poll_logs(),
+            "market_hours": self.get_market_hours_config(),
         }
 
     def _validate(self, raw: dict[str, Any]) -> None:
@@ -606,6 +618,22 @@ class ConfigLoader:
             raise ConfigError("polling.startup_poll_logs must be 0 or greater")
         if 0 < startup_poll_logs < 3:
             raise ConfigError("polling.startup_poll_logs must be at least 3 (or 0 to skip)")
+
+        market_hours = raw.get("market_hours") or {}
+        if market_hours and not isinstance(market_hours, dict):
+            raise ConfigError("market_hours must be a mapping")
+        if isinstance(market_hours, dict) and bool(market_hours.get("enabled", False)):
+            from core.market_hours import parse_hhmm
+
+            open_raw = str(market_hours.get("open", "09:15")).strip() or "09:15"
+            close_raw = str(market_hours.get("close", "15:30")).strip() or "15:30"
+            try:
+                open_t = parse_hhmm(open_raw)
+                close_t = parse_hhmm(close_raw)
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
+            if not open_t < close_t:
+                raise ConfigError("market_hours.open must be earlier than market_hours.close")
 
         loader = ConfigLoader.__new__(ConfigLoader)
         loader._config = raw

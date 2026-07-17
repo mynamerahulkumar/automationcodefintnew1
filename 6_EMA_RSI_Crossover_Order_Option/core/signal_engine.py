@@ -14,6 +14,7 @@ from colorama import Fore, Style, init as colorama_init
 from core.config_loader import ConfigLoader, get_config_loader
 from core.logger import get_logger
 from core.market_data import get_market_data_service
+from core.market_hours import is_market_open
 from core.order_manager import OrderManagerError, get_order_manager
 from core.strategy import Signal, generate_signal
 
@@ -311,6 +312,7 @@ class SignalEngine:
         self.market_data = get_market_data_service()
         self.order_manager = get_order_manager()
         self.scheduler = PollingScheduler(self.config_loader.get_polling_seconds())
+        self._waiting_for_market_open = False
 
     def start(self) -> None:
         """Start the polling engine."""
@@ -407,6 +409,28 @@ class SignalEngine:
 
     def _poll_cycle_inner(self) -> None:
         """Single polling iteration implementation."""
+        hours = self.config_loader.get_market_hours_config()
+        if hours["enabled"] and not is_market_open(hours["open"], hours["close"]):
+            self.state.trade_status = "Waiting for market open"
+            self.state.clear_error()
+            if not self._waiting_for_market_open:
+                logger.info(
+                    "Outside market hours (%s–%s IST, Mon–Fri) — "
+                    "skipping trade lookup until session open",
+                    hours["open"],
+                    hours["close"],
+                )
+                self._waiting_for_market_open = True
+            return
+
+        if hours["enabled"] and self._waiting_for_market_open:
+            logger.info(
+                "Market open (%s–%s IST) — resuming trade lookup",
+                hours["open"],
+                hours["close"],
+            )
+            self._waiting_for_market_open = False
+
         candles = self.market_data.fetch_candles()
         if candles is None:
             self.state.set_error("Failed to fetch candle data")
